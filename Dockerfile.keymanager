@@ -1,0 +1,22 @@
+# ===== BUILD STAGE =====
+FROM golang:1.23-alpine AS builder
+
+RUN apk add --no-cache gcc musl-dev
+
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN CGO_ENABLED=1 GOOS=linux go build -o /keymanager ./cmd/keymanager
+
+# ===== RUN STAGE =====
+FROM alpine:3.19
+
+RUN apk add --no-cache ca-certificates
+
+COPY --from=builder /keymanager /keymanager
+
+EXPOSE 8082
+
+CMD ["/keymanager"]

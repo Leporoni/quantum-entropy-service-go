@@ -1,0 +1,36 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+quantum-api
+keymanager
+frontend
+
+# Build output
+/bin/
+/dist/
+
+# Test
+*.test
+*.out
+coverage.html
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Templ generated files
+*_templ.go
+
+# Environment
+.env
+.env.local
