@@ -4,6 +4,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.api
+      network: host
     container_name: quantum-api
     ports:
       - "8081:8081"
@@ -22,6 +23,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.keymanager
+      network: host
     container_name: quantum-keymanager
     ports:
       - "8082:8082"
