@@ -1,6 +1,6 @@
 module github.com/leporoni/quantum-entropy-go-service
 
-go 1.18
+go 1.23
 
 require (
 	github.com/gin-gonic/gin v1.12.0
