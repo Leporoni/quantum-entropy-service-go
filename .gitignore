@@ -34,3 +34,7 @@ Thumbs.db
 # Environment
 .env
 .env.local
+
+# Session notes
+SESSION_ANALYSIS.md
+GEMINI.md
