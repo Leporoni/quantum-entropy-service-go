@@ -36,5 +36,5 @@ Thumbs.db
 .env.local
 
 # Session notes
-SESSION_ANALYSIS.md
-GEMINI.md
+#SESSION_ANALYSIS.md
+#GEMINI.md
