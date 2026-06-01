@@ -2,6 +2,7 @@ package quantum
 
 import (
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 )
@@ -24,11 +25,13 @@ func (h *Handler) RegisterRoutes(rg *gin.RouterGroup) {
 // GetQuantumData godoc
 // GET /api/v1/quantum-random?source=LFD&count=128&pure=false
 func (h *Handler) GetQuantumData(c *gin.Context) {
-	count := 128 // default
+	count := 128  // default
 	pure := false // default
 
 	if c.Query("count") != "" {
-		// TODO: parse count from query
+		if parsed, err := strconv.Atoi(c.Query("count")); err == nil && parsed > 0 {
+			count = parsed
+		}
 	}
 	if c.Query("pure") == "true" {
 		pure = true

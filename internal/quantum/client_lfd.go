@@ -22,7 +22,11 @@ type LfdClient struct {
 }
 
 // NewLfdClient creates a new LfD API client.
+// baseURL defaults to "https://lfdr.de/qrng_api" if empty.
 func NewLfdClient(baseURL string) *LfdClient {
+	if baseURL == "" {
+		baseURL = "https://lfdr.de/qrng_api"
+	}
 	return &LfdClient{
 		baseURL: baseURL,
 		httpClient: &http.Client{
@@ -34,7 +38,7 @@ func NewLfdClient(baseURL string) *LfdClient {
 // FetchRandomBytes fetches quantum random bytes from the LfD API.
 // The API returns hex-encoded data which is decoded to raw bytes.
 func (c *LfdClient) FetchRandomBytes(count int) ([]byte, error) {
-	url := fmt.Sprintf("%s/api/v1/quantum-random?count=%d&format=HEX", c.baseURL, count)
+	url := fmt.Sprintf("%s/qrng?length=%d&format=HEX", c.baseURL, count)
 	slog.Debug("Fetching from LfD API", "url", url)
 
 	resp, err := c.httpClient.Get(url)

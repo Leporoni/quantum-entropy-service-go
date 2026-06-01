@@ -8,8 +8,8 @@
 | Branch | Escopo | Status |
 |--------|--------|--------|
 | `main` | Scaffold inicial + ajustes de versão | ✅ Feito |
-| `feat/keymanager-core` | `internal/keymanager/` completo (model, repository, service, handler) | 🔲 Próxima |
-| `feat/entrypoints` | `cmd/quantum-api/main.go` + `cmd/keymanager/main.go` | 🔲 Pendente |
+| `feat/keymanager-core` | `internal/keymanager/` completo (model, repository, service, handler) | ✅ Feito |
+| `feat/entrypoints` | `cmd/quantum-api/main.go` + `cmd/keymanager/main.go` | ✅ Feito |
 | `feat/event-driven` | Eventos RabbitMQ `pool.low`/`pool.ok` + fix `quantum/handler.go` | 🔲 Pendente |
 | `feat/web` | Frontend Templ + HTMX (opcional) | 🔲 Opcional |
 
