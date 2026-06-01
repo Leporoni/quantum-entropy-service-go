@@ -5,7 +5,7 @@
 *.so
 *.dylib
 quantum-api
-keymanager
+/keymanager
 frontend
 
 # Build output
