@@ -55,23 +55,66 @@ docker compose down
 
 ### Quantum API (:8081)
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/health` | Health check |
-| GET | `/api/v1/quantum-random?count=256&pure=true` | Fetch quantum entropy |
+**Health check**
+```bash
+curl -s http://localhost:8081/health | jq
+```
+
+**Fetch quantum entropy** (256 bytes, pure quantum — sem mixing)
+```bash
+curl -s "http://localhost:8081/api/v1/quantum-random?count=256&pure=true" | jq
+```
+
+**Fetch quantum entropy** (256 bytes, mixed — NIST SP 800-90C)
+```bash
+curl -s "http://localhost:8081/api/v1/quantum-random?count=256&pure=false" | jq
+```
+
+---
 
 ### Key Manager (:8082)
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/health` | Health check |
-| POST | `/api/v1/keys` | Generate RSA key pair |
-| GET | `/api/v1/keys` | List all keys |
-| DELETE | `/api/v1/keys/:id` | Delete a key |
-| DELETE | `/api/v1/keys` | Delete all keys |
-| POST | `/api/v1/keys/:id/export` | Export private key (Key Wrapping) |
-| GET | `/api/v1/quantum-entropy/status` | Entropy pool status |
-| GET | `/api/v1/quantum-entropy/audit?size=8192` | Run entropy audit |
+**Health check**
+```bash
+curl -s http://localhost:8082/health | jq
+```
+
+**Gerar par de chaves RSA** (2048 ou 4096 bits)
+```bash
+curl -s -X POST http://localhost:8082/api/v1/keys \
+  -H "Content-Type: application/json" \
+  -d '{"alias": "minha-chave-1", "keySize": 2048}' | jq
+```
+
+**Listar todas as chaves**
+```bash
+curl -s http://localhost:8082/api/v1/keys | jq
+```
+
+**Exportar chave privada** (Key Wrapping — substitua 1 pelo ID da chave)
+```bash
+curl -s -X POST http://localhost:8082/api/v1/keys/1/export | jq
+```
+
+**Deletar uma chave** (substitua 1 pelo ID)
+```bash
+curl -s -X DELETE http://localhost:8082/api/v1/keys/1
+```
+
+**Deletar todas as chaves**
+```bash
+curl -s -X DELETE http://localhost:8082/api/v1/keys
+```
+
+**Status do pool de entropia**
+```bash
+curl -s http://localhost:8082/api/v1/quantum-entropy/status | jq
+```
+
+**Executar auditoria de entropia** (compara Quantum vs CSPRNG vs PRNG)
+```bash
+curl -s "http://localhost:8082/api/v1/quantum-entropy/audit?size=8192" | jq
+```
 
 ## RabbitMQ Events
 
