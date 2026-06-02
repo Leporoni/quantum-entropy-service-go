@@ -8,6 +8,7 @@ const (
 	ExchangeKeyEvents        = "key.events"
 	ExchangeAuditRequests    = "audit.requests"
 	ExchangeAuditResults     = "audit.results"
+	ExchangeEntropyPool      = "entropy.pool"
 )
 
 // Routing keys
@@ -19,6 +20,8 @@ const (
 	RoutingKeyKeyDeleted       = "key.deleted"
 	RoutingKeyAuditStart       = "audit.start"
 	RoutingKeyAuditComplete    = "audit.complete"
+	RoutingKeyPoolLow          = "entropy.pool.low"
+	RoutingKeyPoolOk           = "entropy.pool.ok"
 )
 
 // --- Event Payloads ---
@@ -74,4 +77,18 @@ type AuditCompleteEvent struct {
 	SampleSize int         `json:"sampleSize"`
 	Results    interface{} `json:"results"`
 	Timestamp  time.Time   `json:"timestamp"`
+}
+
+// PoolLowEvent is published by keymanager when the entropy pool drops below the low watermark.
+type PoolLowEvent struct {
+	CurrentCount int64     `json:"currentCount"`
+	Threshold    int64     `json:"threshold"`
+	Timestamp    time.Time `json:"timestamp"`
+}
+
+// PoolOkEvent is published by keymanager when the entropy pool reaches the high watermark.
+type PoolOkEvent struct {
+	CurrentCount int64     `json:"currentCount"`
+	Threshold    int64     `json:"threshold"`
+	Timestamp    time.Time `json:"timestamp"`
 }

@@ -32,13 +32,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	svc, err := keymanager.NewService(repo, masterKeySecret)
-	if err != nil {
-		slog.Error("Failed to initialize keymanager service", "error", err)
-		os.Exit(1)
-	}
-
 	// RabbitMQ
+	var pub *messaging.Publisher
 	mqConn, err := messaging.NewConnection(rabbitmqURL)
 	if err != nil {
 		slog.Warn("RabbitMQ unavailable, continuing without messaging", "error", err)
@@ -46,8 +41,12 @@ func main() {
 		defer mqConn.Close()
 		if err := messaging.SetupExchangesAndQueues(mqConn); err != nil {
 			slog.Warn("Failed to setup exchanges/queues", "error", err)
+		} else {
+			pub = messaging.NewPublisher(mqConn)
 		}
 	}
+
+	svc, err := keymanager.NewService(repo, masterKeySecret, pub)
 
 	// Entropy collector (background goroutine)
 	scheduler := collector.NewScheduler(repo, apiBaseURL)

@@ -18,9 +18,10 @@ type Scheduler struct {
 	repo          *keymanager.Repository
 	apiBaseURL    string
 	httpClient    *http.Client
-	lowWatermark  int64  // Start refilling below this
-	highWatermark int64  // Stop refilling above this
+	lowWatermark  int64
+	highWatermark int64
 	stopChan      chan struct{}
+	refillChan    chan struct{} // triggered by pool.low events from RabbitMQ
 }
 
 // NewScheduler creates a new entropy collector Scheduler.
@@ -32,6 +33,15 @@ func NewScheduler(repo *keymanager.Repository, apiBaseURL string) *Scheduler {
 		lowWatermark:  200,
 		highWatermark: 1000,
 		stopChan:      make(chan struct{}),
+		refillChan:    make(chan struct{}, 1), // buffered: coalesce multiple signals
+	}
+}
+
+// TriggerRefill signals the scheduler to start a refill immediately (called on pool.low event).
+func (s *Scheduler) TriggerRefill() {
+	select {
+	case s.refillChan <- struct{}{}:
+	default: // already signalled, drop duplicate
 	}
 }
 
@@ -57,6 +67,9 @@ func (s *Scheduler) run() {
 		select {
 		case <-s.stopChan:
 			return
+		case <-s.refillChan:
+			slog.Info("⚡ Refill triggered by pool.low event")
+			s.collectEntropy()
 		case <-ticker.C:
 			s.collectEntropy()
 		}

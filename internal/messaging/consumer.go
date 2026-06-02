@@ -69,6 +69,7 @@ func SetupExchangesAndQueues(conn *Connection) error {
 		ExchangeKeyEvents,
 		ExchangeAuditRequests,
 		ExchangeAuditResults,
+		ExchangeEntropyPool,
 	}
 	for _, ex := range exchanges {
 		if err := conn.DeclareExchange(ex); err != nil {
@@ -92,6 +93,8 @@ func SetupExchangesAndQueues(conn *Connection) error {
 		{"q.key.deleted", ExchangeKeyEvents, "key.deleted"},
 		{"q.audit.start", ExchangeAuditRequests, "audit.start"},
 		{"q.audit.complete", ExchangeAuditResults, "audit.complete"},
+		{"q.pool.low", ExchangeEntropyPool, RoutingKeyPoolLow},
+		{"q.pool.ok", ExchangeEntropyPool, RoutingKeyPoolOk},
 	}
 
 	for _, q := range queues {
