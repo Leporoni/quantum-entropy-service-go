@@ -9,6 +9,7 @@ import (
 	"github.com/leporoni/quantum-entropy-go-service/internal/collector"
 	"github.com/leporoni/quantum-entropy-go-service/internal/keymanager"
 	"github.com/leporoni/quantum-entropy-go-service/internal/messaging"
+	"github.com/leporoni/quantum-entropy-go-service/internal/ui"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
@@ -59,12 +60,16 @@ func main() {
 
 	// HTTP server
 	kmHandler := keymanager.NewHandler(svc, repo)
+	auditHandler := audit.NewHandler(auditSvc)
+	uiHandler := ui.NewHandler(svc, repo, auditSvc)
 
 	r := gin.Default()
 
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "ok", "service": "keymanager"})
 	})
+
+	uiHandler.RegisterRoutes(r)
 
 	v1 := r.Group("/api/v1")
 	kmHandler.RegisterRoutes(v1)

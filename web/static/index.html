@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Quantum Entropy Service</title>
+  <link rel="stylesheet" href="/static/css/cyberpunk.css" />
+  <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+</head>
+<body>
+  <div class="bg-grid"></div>
+
+  <!-- HEADER -->
+  <header class="header">
+    <div class="brand">QUANTUM<span>_</span>ENTROPY</div>
+    <nav class="tabs">
+      <button class="tab-btn active" onclick="showTab('dashboard')">Dashboard</button>
+      <button class="tab-btn" onclick="showTab('keyvault')">Key Vault</button>
+      <button class="tab-btn" onclick="showTab('entropylab')">Entropy Lab</button>
+    </nav>
+  </header>
+
+  <!-- TOAST -->
+  <div id="toast" class="toast hidden"></div>
+
+  <main class="container">
+
+    <!-- ===== DASHBOARD ===== -->
+    <section id="tab-dashboard" class="tab-section">
+      <div class="hero">
+        <h1>Quantum Cryptography Engine</h1>
+        <p>RSA keys generated with real quantum entropy from the LfD Quantum API. Every bit is certified random.</p>
+      </div>
+
+      <div class="services-grid">
+        <!-- Entropy Pool Status -->
+        <div class="card"
+             hx-get="/ui/pool-status"
+             hx-trigger="load, every 3s"
+             hx-swap="innerHTML">
+          <p class="loading-text">Loading pool status...</p>
+        </div>
+
+        <!-- System Status -->
+        <div class="card">
+          <h2>// SYSTEM STATUS</h2>
+          <div class="status-row">
+            <span class="status-label">Quantum API</span>
+            <span class="status-badge"
+                  hx-get="/ui/service-health?svc=quantum-api&url=http://quantum-api:8081/health"
+                  hx-trigger="load, every 10s"
+                  hx-swap="outerHTML">
+              <span class="badge badge-loading">checking...</span>
+            </span>
+          </div>
+          <div class="status-row" style="margin-top:0.75rem">
+            <span class="status-label">Key Manager</span>
+            <span class="badge badge-online">online</span>
+          </div>
+          <div class="status-row" style="margin-top:0.75rem">
+            <span class="status-label">RabbitMQ Events</span>
+            <span class="badge badge-online">active</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== KEY VAULT ===== -->
+    <section id="tab-keyvault" class="tab-section hidden">
+
+      <!-- Generate Key Form -->
+      <div class="card" style="margin-bottom:2rem">
+        <h2>// GENERATE RSA KEY</h2>
+        <form hx-post="/ui/keys"
+              hx-target="#keys-list"
+              hx-swap="innerHTML"
+              hx-on::after-request="clearForm(this); showToast(event)"
+              class="key-form">
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">Alias</label>
+              <input type="text" name="alias" class="form-input" placeholder="my-key-prod" required />
+            </div>
+            <div class="form-group">
+              <label class="form-label">Key Size</label>
+              <select name="keySize" class="form-input">
+                <option value="2048">2048 bits</option>
+                <option value="4096">4096 bits</option>
+              </select>
+            </div>
+            <div class="form-group form-group-btn">
+              <button type="submit" class="btn-primary">
+                <span class="htmx-indicator">Generating...</span>
+                <span>⚡ Generate</span>
+              </button>
+            </div>
+          </div>
+        </form>
+      </div>
+
+      <!-- Keys List -->
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1.5rem">
+          <h2>// KEY VAULT</h2>
+          <div style="display:flex;gap:0.75rem">
+            <button class="btn-secondary btn-sm"
+                    hx-get="/ui/keys"
+                    hx-target="#keys-list"
+                    hx-swap="innerHTML">↺ Refresh</button>
+            <button class="btn-secondary btn-sm btn-danger"
+                    hx-delete="/ui/keys"
+                    hx-target="#keys-list"
+                    hx-swap="innerHTML"
+                    hx-confirm="Delete ALL keys? This cannot be undone.">🗑 Delete All</button>
+          </div>
+        </div>
+        <div id="keys-list"
+             hx-get="/ui/keys"
+             hx-trigger="load"
+             hx-swap="innerHTML">
+          <p class="loading-text">Loading keys...</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== ENTROPY LAB ===== -->
+    <section id="tab-entropylab" class="tab-section hidden">
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1.5rem">
+          <h2>// ENTROPY AUDIT LAB</h2>
+          <div style="display:flex;gap:0.75rem;align-items:center">
+            <select id="audit-size" class="form-input" style="width:auto">
+              <option value="1024">1 KB</option>
+              <option value="4096">4 KB</option>
+              <option value="8192" selected>8 KB</option>
+              <option value="16384">16 KB</option>
+            </select>
+            <button class="btn-primary"
+                    hx-get="/ui/audit"
+                    hx-include="#audit-size"
+                    hx-vals='js:{"size": document.getElementById("audit-size").value}'
+                    hx-target="#audit-results"
+                    hx-swap="innerHTML"
+                    hx-indicator="#audit-spinner">
+              ▶ Run Audit
+            </button>
+            <span id="audit-spinner" class="htmx-indicator loading-text">Running...</span>
+          </div>
+        </div>
+        <div id="audit-results">
+          <p class="loading-text" style="text-align:center;padding:3rem 0">
+            Click "Run Audit" to compare Quantum vs CSPRNG vs PRNG entropy sources.
+          </p>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="footer">
+    <p>Quantum Entropy Service &mdash; <a href="mailto:leporonitech@gmail.com">Leporoni Tech Solutions</a></p>
+  </footer>
+
+  <script>
+    function showTab(name) {
+      document.querySelectorAll('.tab-section').forEach(s => s.classList.add('hidden'));
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      document.getElementById('tab-' + name).classList.remove('hidden');
+      event.target.classList.add('active');
+    }
+
+    function clearForm(form) { form.reset(); }
+
+    function showToast(event) {
+      const toast = document.getElementById('toast');
+      const ok = event.detail.successful;
+      toast.textContent = ok ? '✅ Key generated successfully' : '❌ Failed to generate key';
+      toast.className = 'toast ' + (ok ? 'toast-success' : 'toast-error');
+      setTimeout(() => { toast.className = 'toast hidden'; }, 3000);
+    }
+  </script>
+</body>
+</html>
