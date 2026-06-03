@@ -60,7 +60,6 @@ func main() {
 
 	// HTTP server
 	kmHandler := keymanager.NewHandler(svc, repo)
-	auditHandler := audit.NewHandler(auditSvc)
 	uiHandler := ui.NewHandler(svc, repo, auditSvc)
 
 	r := gin.Default()
