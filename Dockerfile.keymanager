@@ -21,8 +21,11 @@ FROM alpine:3.19
 
 RUN apk add --no-cache ca-certificates
 
-COPY --from=builder /keymanager /keymanager
+WORKDIR /app
+
+COPY --from=builder /keymanager /app/keymanager
+COPY --from=builder /app/web/static /app/web/static
 
 EXPOSE 8082
 
-CMD ["/keymanager"]
+CMD ["/app/keymanager"]
