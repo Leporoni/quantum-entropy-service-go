@@ -29,7 +29,7 @@ A microservices project rewritten in **Go** that fetches quantum random numbers 
 | **RabbitMQ** | Event-driven messaging |
 | **amqp091-go** | RabbitMQ Go client |
 | **crypto/\*** (stdlib) | RSA, AES-256-GCM, SHA-256/512 |
-| **Templ + HTMX** | Frontend (planned) |
+| **HTMX** | Frontend (zero-JS interactions) |
 
 ## Quick Start
 
@@ -50,6 +50,25 @@ open http://localhost:15672  # guest/guest
 # Stop
 docker compose down
 ```
+
+## Frontend — Cyberpunk UI
+
+Acesse o frontend em **http://localhost:8082** após subir os containers.
+
+Construído com HTML + HTMX e tema cyberpunk (neon cyan/magenta, glassmorphism, grid animado). Todas as interações são feitas sem JavaScript customizado — o HTMX troca fragmentos HTML diretamente com o servidor.
+
+### Dashboard
+Mostra o status do pool de entropia em tempo real com barra animada (atualiza a cada 3s via HTMX polling) e o status dos serviços.
+
+### Key Vault
+Interface completa para gerenciamento de chaves RSA:
+- Gerar novo par de chaves (2048 ou 4096 bits) com feedback inline
+- Listar todas as chaves em tabela
+- Exportar chave privada (AES-256-GCM unwrapping) com botão de cópia
+- Deletar chave individual ou todas
+
+### Entropy Lab
+Executa a auditoria multi-fonte comparando a qualidade da entropia quântica (LfD) contra CSPRNG e PRNG convencionais, exibindo métricas NIST SP 800-90B: Shannon Entropy, Chi-Square, Pi Monte Carlo, Compression Ratio e Repetitions.
 
 ## API Endpoints
 
@@ -133,14 +152,18 @@ curl -s "http://localhost:8082/api/v1/quantum-entropy/audit?size=8192" | jq
 ```
 cmd/
   quantum-api/main.go        # Quantum API entrypoint
-  keymanager/main.go          # Key Manager entrypoint
+  keymanager/main.go         # Key Manager entrypoint
 internal/
-  quantum/                    # Entropy collection (LfD)
-  keymanager/                 # RSA key management
-  audit/                      # Entropy Lab (validators)
-  collector/                  # Entropy scheduler (goroutines)
-  messaging/                  # RabbitMQ (publisher/consumer/events)
-web/                          # Frontend (Templ + HTMX) [planned]
+  quantum/                   # Entropy collection (LfD)
+  keymanager/                # RSA key management
+  audit/                     # Entropy Lab (validators)
+  collector/                 # Entropy scheduler (goroutines)
+  messaging/                 # RabbitMQ (publisher/consumer/events)
+  ui/                        # HTMX fragment handlers
+web/
+  static/
+    index.html               # Cyberpunk single-page frontend
+    css/cyberpunk.css        # Neon theme
 ```
 
 ## 👨‍💻 Developed by
