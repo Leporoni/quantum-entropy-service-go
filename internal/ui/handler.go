@@ -1,9 +1,12 @@
 package ui
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -14,6 +17,8 @@ import (
 )
 
 const poolMax = 1000
+
+var httpClient = &http.Client{Timeout: 3 * time.Second}
 
 // Handler serves HTMX HTML fragments for the cyberpunk frontend.
 type Handler struct {
@@ -36,6 +41,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 	ui := r.Group("/ui")
 	ui.GET("/pool-status", h.poolStatus)
+	ui.GET("/system-status", h.systemStatus)
+	ui.GET("/rabbitmq-queues", h.rabbitmqQueues)
 	ui.GET("/keys", h.listKeys)
 	ui.POST("/keys", h.generateKey)
 	ui.DELETE("/keys", h.deleteAllKeys)
@@ -219,6 +226,104 @@ func (h *Handler) runAudit(c *gin.Context) {
 
 	sb.WriteString(`</div>`)
 	c.Data(http.StatusOK, "text/html", []byte(sb.String()))
+}
+
+// GET /ui/system-status — system status card fragment (checks services server-side)
+func (h *Handler) systemStatus(c *gin.Context) {
+	quantumAPIURL := getEnv("API_BASE_URL", "http://quantum-api:8081") + "/health"
+	rabbitmqURL := "http://" + getEnv("RABBITMQ_MGMT_HOST", "rabbitmq:15672") + "/api/overview"
+
+	quantumBadge := checkService(quantumAPIURL, "", "")
+	rabbitmqBadge := checkService(rabbitmqURL, "guest", "guest")
+
+	c.Data(http.StatusOK, "text/html", []byte(fmt.Sprintf(`
+<h2>// SYSTEM STATUS</h2>
+<div class="status-row">
+  <span class="status-label">Quantum API</span>%s
+</div>
+<div class="status-row" style="margin-top:0.75rem">
+  <span class="status-label">Key Manager</span>
+  <span class="badge badge-online">online</span>
+</div>
+<div class="status-row" style="margin-top:0.75rem">
+  <span class="status-label">RabbitMQ</span>%s
+</div>`, quantumBadge, rabbitmqBadge)))
+}
+
+// checkService performs a GET to url and returns an HTML badge.
+func checkService(url, user, pass string) string {
+	req, _ := http.NewRequest("GET", url, nil)
+	if user != "" {
+		req.SetBasicAuth(user, pass)
+	}
+	resp, err := httpClient.Do(req)
+	if err != nil || resp.StatusCode >= 400 {
+		return `<span class="badge badge-offline">offline</span>`
+	}
+	return `<span class="badge badge-online">online</span>`
+}
+
+// GET /ui/rabbitmq-queues — RabbitMQ queues fragment via Management API
+func (h *Handler) rabbitmqQueues(c *gin.Context) {
+	host := getEnv("RABBITMQ_MGMT_HOST", "rabbitmq:15672")
+	url := "http://" + host + "/api/queues"
+
+	req, _ := http.NewRequest("GET", url, nil)
+	req.SetBasicAuth("guest", "guest")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		c.Data(http.StatusOK, "text/html", []byte(`
+<div class="empty-state">⚠️ Cannot reach RabbitMQ Management API.</div>`))
+		return
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+
+	var queues []struct {
+		Name      string `json:"name"`
+		Messages  int    `json:"messages"`
+		Ready     int    `json:"messages_ready"`
+		Unacked   int    `json:"messages_unacknowledged"`
+		Consumers int    `json:"consumers"`
+		State     string `json:"state"`
+	}
+	if err := json.Unmarshal(body, &queues); err != nil || len(queues) == 0 {
+		c.Data(http.StatusOK, "text/html", []byte(`
+<div class="empty-state">No queues found.</div>`))
+		return
+	}
+
+	var sb strings.Builder
+	sb.WriteString(`<table class="keys-table">
+<thead><tr>
+  <th>Queue</th><th>State</th><th>Ready</th><th>Unacked</th><th>Total</th><th>Consumers</th>
+</tr></thead><tbody>`)
+
+	for _, q := range queues {
+		stateClass := "badge-online"
+		if q.State != "running" {
+			stateClass = "badge-offline"
+		}
+		sb.WriteString(fmt.Sprintf(`<tr>
+  <td class="key-alias">%s</td>
+  <td><span class="badge %s">%s</span></td>
+  <td class="key-id">%d</td>
+  <td class="key-id">%d</td>
+  <td style="color:var(--neon-cyan);font-family:var(--font-mono)">%d</td>
+  <td class="key-id">%d</td>
+</tr>`, q.Name, stateClass, q.State, q.Ready, q.Unacked, q.Messages, q.Consumers))
+	}
+	sb.WriteString(`</tbody></table>`)
+	c.Data(http.StatusOK, "text/html", []byte(sb.String()))
+}
+
+func getEnv(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }
 
 func parseID(c *gin.Context) (uint, error) {

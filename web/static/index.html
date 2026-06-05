@@ -14,9 +14,10 @@
   <header class="header">
     <div class="brand">QUANTUM<span>_</span>ENTROPY</div>
     <nav class="tabs">
-      <button class="tab-btn active" onclick="showTab('dashboard')">Dashboard</button>
-      <button class="tab-btn" onclick="showTab('keyvault')">Key Vault</button>
-      <button class="tab-btn" onclick="showTab('entropylab')">Entropy Lab</button>
+      <button class="tab-btn active" onclick="showTab('dashboard', event)">Dashboard</button>
+      <button class="tab-btn" onclick="showTab('keyvault', event)">Key Vault</button>
+      <button class="tab-btn" onclick="showTab('entropylab', event)">Entropy Lab</button>
+      <button class="tab-btn" onclick="showTab('rabbitmq', event)">RabbitMQ</button>
     </nav>
   </header>
 
@@ -41,26 +42,12 @@
           <p class="loading-text">Loading pool status...</p>
         </div>
 
-        <!-- System Status -->
-        <div class="card">
-          <h2>// SYSTEM STATUS</h2>
-          <div class="status-row">
-            <span class="status-label">Quantum API</span>
-            <span class="status-badge"
-                  hx-get="/ui/service-health?svc=quantum-api&url=http://quantum-api:8081/health"
-                  hx-trigger="load, every 10s"
-                  hx-swap="outerHTML">
-              <span class="badge badge-loading">checking...</span>
-            </span>
-          </div>
-          <div class="status-row" style="margin-top:0.75rem">
-            <span class="status-label">Key Manager</span>
-            <span class="badge badge-online">online</span>
-          </div>
-          <div class="status-row" style="margin-top:0.75rem">
-            <span class="status-label">RabbitMQ Events</span>
-            <span class="badge badge-online">active</span>
-          </div>
+        <!-- System Status — checked server-side to avoid DNS issues in browser -->
+        <div class="card"
+             hx-get="/ui/system-status"
+             hx-trigger="load, every 10s"
+             hx-swap="innerHTML">
+          <p class="loading-text">Checking services...</p>
         </div>
       </div>
     </section>
@@ -137,7 +124,6 @@
             </select>
             <button class="btn-primary"
                     hx-get="/ui/audit"
-                    hx-include="#audit-size"
                     hx-vals='js:{"size": document.getElementById("audit-size").value}'
                     hx-target="#audit-results"
                     hx-swap="innerHTML"
@@ -155,6 +141,46 @@
       </div>
     </section>
 
+    <!-- ===== RABBITMQ ===== -->
+    <section id="tab-rabbitmq" class="tab-section hidden">
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1.5rem">
+          <h2>// RABBITMQ QUEUES</h2>
+          <div style="display:flex;gap:0.75rem;align-items:center">
+            <span style="font-size:0.75rem;color:var(--text-secondary);font-family:var(--font-mono)">auto-refresh: 5s</span>
+            <a href="http://localhost:15672" target="_blank" class="btn-secondary btn-sm">↗ Management UI</a>
+          </div>
+        </div>
+        <div hx-get="/ui/rabbitmq-queues"
+             hx-trigger="load, every 5s"
+             hx-swap="innerHTML">
+          <p class="loading-text">Loading queues...</p>
+        </div>
+      </div>
+
+      <!-- Info cards -->
+      <div class="services-grid" style="margin-top:2rem">
+        <div class="card">
+          <h2>// EXCHANGES</h2>
+          <div class="metric-row"><span class="metric-label">entropy.collected</span><span class="metric-value">topic</span></div>
+          <div class="metric-row"><span class="metric-label">entropy.pool</span><span class="metric-value">topic</span></div>
+          <div class="metric-row"><span class="metric-label">key.events</span><span class="metric-value">topic</span></div>
+          <div class="metric-row"><span class="metric-label">audit.requests</span><span class="metric-value">topic</span></div>
+          <div class="metric-row"><span class="metric-label">audit.results</span><span class="metric-value">topic</span></div>
+          <div class="metric-row"><span class="metric-label">dlx.quantum</span><span class="metric-value">fanout (DLX)</span></div>
+        </div>
+        <div class="card">
+          <h2>// HYSTERESIS EVENTS</h2>
+          <div class="metric-row"><span class="metric-label">entropy.pool.low</span><span class="metric-value" style="color:#ff0050">pool &lt; 200</span></div>
+          <div class="metric-row"><span class="metric-label">entropy.pool.ok</span><span class="metric-value" style="color:var(--neon-green)">pool ≥ 1000</span></div>
+          <p style="margin-top:1rem;font-size:0.8rem;color:var(--text-secondary);line-height:1.6">
+            Published by <strong style="color:var(--neon-cyan)">keymanager</strong> after RSA key operations.
+            Consumed by <strong style="color:var(--neon-magenta)">quantum-api</strong> to trigger immediate pool refill.
+          </p>
+        </div>
+      </div>
+    </section>
+
   </main>
 
   <footer class="footer">
@@ -162,7 +188,7 @@
   </footer>
 
   <script>
-    function showTab(name) {
+    function showTab(name, event) {
       document.querySelectorAll('.tab-section').forEach(s => s.classList.add('hidden'));
       document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
       document.getElementById('tab-' + name).classList.remove('hidden');
