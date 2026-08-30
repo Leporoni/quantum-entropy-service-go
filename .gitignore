@@ -4,7 +4,7 @@
 *.dll
 *.so
 *.dylib
-quantum-api
+/quantum-api
 /keymanager
 frontend
 
