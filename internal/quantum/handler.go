@@ -1,6 +1,7 @@
 package quantum
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 
@@ -29,9 +30,12 @@ func (h *Handler) GetQuantumData(c *gin.Context) {
 	pure := false // default
 
 	if c.Query("count") != "" {
-		if parsed, err := strconv.Atoi(c.Query("count")); err == nil && parsed > 0 {
-			count = parsed
+		parsed, err := strconv.Atoi(c.Query("count"))
+		if err != nil || parsed <= 0 || parsed > MaxCount {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("count must be between 1 and %d", MaxCount)})
+			return
 		}
+		count = parsed
 	}
 	if c.Query("pure") == "true" {
 		pure = true

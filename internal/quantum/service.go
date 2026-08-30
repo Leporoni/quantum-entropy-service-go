@@ -7,6 +7,9 @@ import (
 	"log/slog"
 )
 
+// MaxCount is the maximum number of bytes that can be requested per call.
+const MaxCount = 1024
+
 // Service implements quantum entropy collection and NIST SP 800-90C mixing.
 type Service struct {
 	lfdClient *LfdClient
@@ -21,8 +24,8 @@ func NewService(lfdClient *LfdClient) *Service {
 // If pure=true, returns raw quantum bytes without mixing.
 // If pure=false, mixes with system entropy per NIST SP 800-90C.
 func (s *Service) GetEntropyAsBase64(count int, pure bool) (string, error) {
-	if count <= 0 || count > 1024 {
-		return "", fmt.Errorf("count must be between 1 and 1024, got %d", count)
+	if count <= 0 || count > MaxCount {
+		return "", fmt.Errorf("count must be between 1 and %d, got %d", MaxCount, count)
 	}
 
 	slog.Info("Fetching quantum random bytes from LfD API",
