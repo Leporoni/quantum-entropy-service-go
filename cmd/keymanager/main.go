@@ -47,10 +47,17 @@ func main() {
 		}
 	}
 
-	svc, err := keymanager.NewService(repo, masterKeySecret, pub)
-
 	// Entropy collector (background goroutine)
 	scheduler := collector.NewScheduler(repo, apiBaseURL)
+
+	svc, err := keymanager.NewService(repo, masterKeySecret, pub)
+	if err != nil {
+		slog.Error("Failed to initialize service", "error", err)
+		os.Exit(1)
+	}
+
+	// Trigger an immediate local refill when the pool drops below the low watermark.
+	svc.OnPoolLow = scheduler.TriggerRefill
 	scheduler.Start()
 	defer scheduler.Stop()
 

@@ -79,8 +79,12 @@ func (h *Handler) deleteKey(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
 		return
 	}
-	if err := h.repo.DeleteKeyByID(id); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+	if err := h.svc.DeleteKey(id); err != nil {
+		status := http.StatusInternalServerError
+		if err.Error() == "key not found" {
+			status = http.StatusNotFound
+		}
+		c.JSON(status, gin.H{"error": err.Error()})
 		return
 	}
 	c.Status(http.StatusNoContent)
@@ -88,7 +92,7 @@ func (h *Handler) deleteKey(c *gin.Context) {
 
 // DELETE /keys
 func (h *Handler) deleteAllKeys(c *gin.Context) {
-	if err := h.repo.DeleteAllKeys(); err != nil {
+	if err := h.svc.DeleteAllKeys(); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
