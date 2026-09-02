@@ -7,9 +7,11 @@ import (
 	"log/slog"
 	"math"
 	mrand "math/rand"
+	"time"
 
 	"github.com/leporoni/quantum-entropy-go-service/internal/audit/validators"
 	"github.com/leporoni/quantum-entropy-go-service/internal/keymanager"
+	"github.com/leporoni/quantum-entropy-go-service/internal/messaging"
 )
 
 // AuditMetrics holds the results of an entropy audit for a single source.
@@ -33,16 +35,27 @@ type AuditReport struct {
 // Service performs entropy quality audits across multiple sources.
 type Service struct {
 	repo *keymanager.Repository
+	pub  *messaging.Publisher
 }
 
 // NewService creates a new audit Service.
-func NewService(repo *keymanager.Repository) *Service {
-	return &Service{repo: repo}
+func NewService(repo *keymanager.Repository, pub *messaging.Publisher) *Service {
+	return &Service{repo: repo, pub: pub}
 }
 
 // RunFullAudit runs a multi-source entropy audit comparing quantum vs. PRNG sources.
 func (s *Service) RunFullAudit(requestedSize int) (*AuditReport, error) {
 	slog.Info("Starting Dynamic Multi-Source Audit", "requestedSize", requestedSize)
+
+	if s.pub != nil {
+		evt := messaging.AuditStartEvent{
+			RequestedSize: requestedSize,
+			Timestamp:     time.Now(),
+		}
+		if err := s.pub.Publish(messaging.ExchangeAuditRequests, messaging.RoutingKeyAuditStart, evt); err != nil {
+			slog.Warn("Failed to publish audit.start event", "error", err)
+		}
+	}
 
 	var results []AuditMetrics
 	realSampleSize := 0
@@ -60,10 +73,23 @@ func (s *Service) RunFullAudit(requestedSize int) (*AuditReport, error) {
 		results = append(results, auditSource("Java Random (LCRNG)", getPrngSample(realSampleSize)))
 	}
 
-	return &AuditReport{
+	report := &AuditReport{
 		SampleSize: realSampleSize,
 		Results:    results,
-	}, nil
+	}
+
+	if s.pub != nil {
+		evt := messaging.AuditCompleteEvent{
+			SampleSize: realSampleSize,
+			Results:    results,
+			Timestamp:  time.Now(),
+		}
+		if err := s.pub.Publish(messaging.ExchangeAuditResults, messaging.RoutingKeyAuditComplete, evt); err != nil {
+			slog.Warn("Failed to publish audit.complete event", "error", err)
+		}
+	}
+
+	return report, nil
 }
 
 func auditSource(name string, data []byte) AuditMetrics {
