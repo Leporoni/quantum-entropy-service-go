@@ -30,6 +30,9 @@ type Service struct {
 	repo      *Repository
 	masterKey []byte // 32-byte AES-256 master key derived from MASTER_KEY_SECRET
 	pub       *messaging.Publisher
+	// OnPoolLow, when set, is invoked whenever the pool drops below the low watermark.
+	// Used by the entrypoint to trigger an immediate scheduler refill (no consumer loop).
+	OnPoolLow func()
 }
 
 // NewService creates a new keymanager Service.
@@ -94,6 +97,8 @@ func (s *Service) GenerateKey(alias string, keySize int) (*RsaKey, error) {
 	}
 
 	slog.Info("RSA key generated", "id", key.ID, "alias", alias, "keySize", keySize)
+	s.publish(messaging.ExchangeKeyEvents, messaging.RoutingKeyKeyCreated,
+		messaging.KeyCreatedEvent{ID: key.ID, Alias: alias, KeySize: keySize, Timestamp: time.Now()})
 	s.checkAndPublishPoolEvent()
 	return key, nil
 }
@@ -120,6 +125,8 @@ func (s *Service) ExportPrivateKey(id uint) ([]byte, error) {
 	}
 
 	slog.Info("RSA key exported", "id", id, "alias", key.Alias)
+	s.publish(messaging.ExchangeKeyEvents, messaging.RoutingKeyKeyExported,
+		messaging.KeyExportedEvent{ID: id, Alias: key.Alias, Algorithm: "AES-256-GCM", Timestamp: time.Now()})
 	s.checkAndPublishPoolEvent()
 	return privPEM, nil
 }
@@ -127,6 +134,53 @@ func (s *Service) ExportPrivateKey(id uint) ([]byte, error) {
 // PoolStatus returns the current count of unused entropy records.
 func (s *Service) PoolStatus() (int64, error) {
 	return s.repo.CountAllUnusedEntropy()
+}
+
+// DeleteKey removes a single key and publishes a key.deleted event.
+func (s *Service) DeleteKey(id uint) error {
+	key, err := s.repo.FindKeyByID(id)
+	if err != nil {
+		return err
+	}
+	if key == nil {
+		return errors.New("key not found")
+	}
+
+	if err := s.repo.DeleteKeyByID(id); err != nil {
+		return err
+	}
+
+	s.publish(messaging.ExchangeKeyEvents, messaging.RoutingKeyKeyDeleted,
+		messaging.KeyDeletedEvent{ID: id, Alias: key.Alias, Timestamp: time.Now()})
+	return nil
+}
+
+// DeleteAllKeys removes all keys, publishing a key.deleted event per removed key.
+func (s *Service) DeleteAllKeys() error {
+	keys, err := s.repo.FindAllKeys()
+	if err != nil {
+		return err
+	}
+
+	if err := s.repo.DeleteAllKeys(); err != nil {
+		return err
+	}
+
+	for _, k := range keys {
+		s.publish(messaging.ExchangeKeyEvents, messaging.RoutingKeyKeyDeleted,
+			messaging.KeyDeletedEvent{ID: k.ID, Alias: k.Alias, Timestamp: time.Now()})
+	}
+	return nil
+}
+
+// publish sends an event through the Publisher, silently no-oping when messaging is disabled.
+func (s *Service) publish(exchange, routingKey string, event interface{}) {
+	if s.pub == nil {
+		return
+	}
+	if err := s.pub.Publish(exchange, routingKey, event); err != nil {
+		slog.Warn("Failed to publish event", "exchange", exchange, "routingKey", routingKey, "error", err)
+	}
 }
 
 // checkAndPublishPoolEvent checks current pool size and publishes pool.low or pool.ok accordingly.
@@ -141,6 +195,9 @@ func (s *Service) checkAndPublishPoolEvent() {
 	}
 	now := time.Now()
 	if count < poolLowThreshold {
+		if s.OnPoolLow != nil {
+			s.OnPoolLow()
+		}
 		evt := messaging.PoolLowEvent{CurrentCount: count, Threshold: poolLowThreshold, Timestamp: now}
 		if err := s.pub.Publish(messaging.ExchangeEntropyPool, messaging.RoutingKeyPoolLow, evt); err != nil {
 			slog.Warn("Failed to publish pool.low event", "error", err)
