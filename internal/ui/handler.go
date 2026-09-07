@@ -90,10 +90,10 @@ func (h *Handler) listKeys(c *gin.Context) {
 	sb.WriteString(`<table class="keys-table">
 <thead><tr>
   <th>ID</th><th>Alias</th><th>Key Size</th><th>Created</th><th>Actions</th>
-</tr></thead><tbody>`)
+</tr></thead>`)
 
 	for _, k := range keys {
-		sb.WriteString(fmt.Sprintf(`<tr>
+		sb.WriteString(fmt.Sprintf(`<tbody id="key-row-%d"><tr>
   <td class="key-id">#%d</td>
   <td class="key-alias">%s</td>
   <td>%d bits</td>
@@ -107,20 +107,21 @@ func (h *Handler) listKeys(c *gin.Context) {
     </button>
     <button class="btn-secondary btn-sm btn-danger"
             hx-delete="/ui/keys/%d"
-            hx-target="closest tr"
+            hx-target="#key-row-%d"
             hx-swap="outerHTML"
             hx-confirm="Delete key '%s'?">
       🗑
     </button>
   </td>
 </tr>
-<tr id="export-modal-%d"><td colspan="5" style="padding:0"></td></tr>`,
+<tr id="export-modal-%d"><td colspan="5" style="padding:0"></td></tr></tbody>`,
+			k.ID,
 			k.ID, k.Alias, k.KeySize,
 			k.CreatedAt.Format(time.RFC3339),
-			k.ID, k.ID, k.ID, k.Alias, k.ID))
+			k.ID, k.ID, k.ID, k.ID, k.Alias, k.ID))
 	}
 
-	sb.WriteString(`</tbody></table>`)
+	sb.WriteString(`</table>`)
 	c.Data(http.StatusOK, "text/html", []byte(sb.String()))
 }
 
@@ -143,7 +144,7 @@ func (h *Handler) generateKey(c *gin.Context) {
 
 // DELETE /ui/keys — delete all, return empty state
 func (h *Handler) deleteAllKeys(c *gin.Context) {
-	h.repo.DeleteAllKeys()
+	h.svc.DeleteAllKeys()
 	c.Data(http.StatusOK, "text/html", []byte(`
 <div class="empty-state">No keys in vault. Generate one above.</div>`))
 }
@@ -155,7 +156,7 @@ func (h *Handler) deleteKey(c *gin.Context) {
 		c.Status(http.StatusBadRequest)
 		return
 	}
-	h.repo.DeleteKeyByID(id)
+	h.svc.DeleteKey(id)
 	c.Data(http.StatusOK, "text/html", []byte("")) // remove row
 }
 

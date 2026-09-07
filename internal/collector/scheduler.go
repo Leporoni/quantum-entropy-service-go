@@ -10,12 +10,14 @@ import (
 	"time"
 
 	"github.com/leporoni/quantum-entropy-go-service/internal/keymanager"
+	"github.com/leporoni/quantum-entropy-go-service/internal/messaging"
 )
 
 // Scheduler collects quantum entropy from the Quantum API and stores it in the database.
 // Implements hysteresis logic: refill when below lowWatermark, stop when above highWatermark.
 type Scheduler struct {
 	repo          *keymanager.Repository
+	pub           *messaging.Publisher
 	apiBaseURL    string
 	httpClient    *http.Client
 	lowWatermark  int64
@@ -25,9 +27,10 @@ type Scheduler struct {
 }
 
 // NewScheduler creates a new entropy collector Scheduler.
-func NewScheduler(repo *keymanager.Repository, apiBaseURL string) *Scheduler {
+func NewScheduler(repo *keymanager.Repository, apiBaseURL string, pub *messaging.Publisher) *Scheduler {
 	return &Scheduler{
 		repo:          repo,
+		pub:           pub,
 		apiBaseURL:    apiBaseURL,
 		httpClient:    &http.Client{Timeout: 30 * time.Second},
 		lowWatermark:  200,
@@ -165,6 +168,18 @@ func (s *Scheduler) fetchAndSave() bool {
 	if err := s.repo.SaveEntropy(quantumData); err != nil {
 		slog.Error("Failed to save entropy", "error", err)
 		return false
+	}
+
+	if s.pub != nil {
+		evt := messaging.EntropyNewEvent{
+			Source:     "LFD",
+			Base64Data: result.Data,
+			ByteCount:  len(decoded),
+			Timestamp:  time.Now(),
+		}
+		if err := s.pub.Publish(messaging.ExchangeEntropyCollected, messaging.RoutingKeyEntropyNew, evt); err != nil {
+			slog.Warn("Failed to publish entropy.new event", "error", err)
+		}
 	}
 
 	slog.Info("✅ Entropy saved",

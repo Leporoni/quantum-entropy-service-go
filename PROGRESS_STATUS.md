@@ -37,6 +37,7 @@ Reescrita em Go do `quantum-entropy-service` (Java/Spring Boot). Coleta entropia
 | `feat/web` | Frontend cyberpunk HTML + HTMX + `internal/ui/` | ✅ Feito |
 | `feat/ui-rabbitmq-dashboard` | Tab RabbitMQ no frontend + fix system status server-side | ✅ Feito |
 | `feat/rabbitmq-events-dashboard` | Publicação de eventos de chave + wire pool refill | ✅ Feito |
+| `feat/rabbitmq-events-and-ui-fixes` | Publicação de todos os eventos + fix modal export + fix delete UI | ✅ Feito |
 
 ---
 
@@ -77,6 +78,21 @@ keymanager: após gerar ou exportar chave, verifica pool
 
 ---
 
+## Eventos RabbitMQ
+
+| Exchange | Routing Key | Evento | Publicado por |
+|----------|-------------|--------|---------------|
+| `entropy.collected` | `entropy.new` | `EntropyNewEvent` | `collector/scheduler.go` |
+| `key.events` | `key.created` | `KeyCreatedEvent` | `keymanager/service.go` |
+| `key.events` | `key.exported` | `KeyExportedEvent` | `keymanager/service.go` |
+| `key.events` | `key.deleted` | `KeyDeletedEvent` | `keymanager/service.go` (via UI) |
+| `audit.requests` | `audit.start` | `AuditStartEvent` | `audit/service.go` |
+| `audit.results` | `audit.complete` | `AuditCompleteEvent` | `audit/service.go` |
+| `entropy.pool` | `entropy.pool.low` | `PoolLowEvent` | `keymanager/service.go` |
+| `entropy.pool` | `entropy.pool.ok` | `PoolOkEvent` | `keymanager/service.go` |
+
+---
+
 ## Estado Atual — Implementado
 
 | Pacote | Status | Observação |
@@ -84,9 +100,9 @@ keymanager: após gerar ou exportar chave, verifica pool
 | `internal/quantum/` | ✅ | Cliente LfD + mixing NIST |
 | `internal/keymanager/` | ✅ | CRUD RSA + AES-256-GCM wrap + publicação de eventos |
 | `internal/messaging/` | ✅ | Topologia RabbitMQ completa |
-| `internal/audit/` | ✅ | Shannon, Chi-Square, Monte Carlo |
-| `internal/collector/` | ✅ | Scheduler com hysteresis + TriggerRefill |
-| `internal/ui/` | ⚠️ | Fragmentos HTMX — delete bypassa Service (ver bugs) |
+| `internal/audit/` | ✅ | Shannon, Chi-Square, Monte Carlo + publicação de eventos |
+| `internal/collector/` | ✅ | Scheduler com hysteresis + TriggerRefill + publicação de eventos |
+| `internal/ui/` | ✅ | Fragmentos HTMX + delete via Service + modal export fix |
 | `cmd/quantum-api/main.go` | ✅ | Entrypoint serviço 1 |
 | `cmd/keymanager/main.go` | ✅ | Entrypoint serviço 2 + OnPoolLow wired |
 | `web/static/` | ✅ | Frontend cyberpunk |
@@ -94,24 +110,31 @@ keymanager: após gerar ou exportar chave, verifica pool
 
 ---
 
-## Bugs Conhecidos
+## Bugs Corrigidos
 
 ### UI Handler — delete bypassa Service (sem eventos)
-- **Problema:** `ui/handler.go:146,158` chama `repo.DeleteAllKeys()` e `repo.DeleteKeyByID()` diretamente
-- **Impacto:** Deletes feitos via frontend HTMX não publicam `KeyDeletedEvent` no RabbitMQ
-- **Correção:** Trocar por `h.svc.DeleteAllKeys()` e `h.svc.DeleteKey(id)` (já existem no Service)
-- **Status:** Pendente
+- **Problema:** `ui/handler.go:146,158` chamava `repo.DeleteAllKeys()` e `repo.DeleteKeyByID()` diretamente
+- **Correção:** Trocado por `h.svc.DeleteAllKeys()` e `h.svc.DeleteKey(id)`
+- **Status:** ✅ Corrigido
 
-### TODOs no código
-- `internal/audit/service.go:92` — `TODO: Fetch actual quantum data from repository`
-- `internal/collector/scheduler.go:156` — `TODO: Add NIST SP 800-90B entropy validation here`
+### Modal de export persistia após delete
+- **Problema:** Ao exportar uma chave e depois deletá-la, o modal com o PEM permanecia visível
+- **Causa:** `hx-target="closest tr"` removia apenas a linha de dados, não a linha do modal
+- **Correção:** Cada chave agora envolta em `<tbody id="key-row-{id}">`, delete targeta o `<tbody>` inteiro
+- **Status:** ✅ Corrigido
+
+### Eventos não publicados no RabbitMQ
+- **Problema:** `EntropyNewEvent`, `AuditStartEvent`, `AuditCompleteEvent` nunca eram publicados
+- **Causa:** `collector.Scheduler` e `audit.Service` não tinham `*messaging.Publisher`
+- **Correção:** Publisher injetado em ambos, eventos publicados nos pontos corretos
+- **Status:** ✅ Corrigido
 
 ---
 
-## Próximos Passos
+## TODOs Pendentes
 
-1. Atualizar `ui/handler.go` para usar `svc.DeleteKey()` e `svc.DeleteAllKeys()`
-2. Implementar TODOs pendentes (audit data fetch, NIST validation no collector)
+- `internal/audit/service.go:92` — `TODO: Fetch actual quantum data from repository`
+- `internal/collector/scheduler.go:156` — `TODO: Add NIST SP 800-90B entropy validation here`
 
 ---
 

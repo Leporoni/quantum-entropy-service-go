@@ -48,7 +48,7 @@ func main() {
 	}
 
 	// Entropy collector (background goroutine)
-	scheduler := collector.NewScheduler(repo, apiBaseURL)
+	scheduler := collector.NewScheduler(repo, apiBaseURL, pub)
 
 	svc, err := keymanager.NewService(repo, masterKeySecret, pub)
 	if err != nil {
@@ -62,7 +62,7 @@ func main() {
 	defer scheduler.Stop()
 
 	// Audit service
-	auditSvc := audit.NewService(repo)
+	auditSvc := audit.NewService(repo, pub)
 	auditHandler := audit.NewHandler(auditSvc)
 
 	// HTTP server
