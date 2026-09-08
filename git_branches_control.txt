@@ -1,12 +1,7 @@
-##### Tasks #####
+branch anterior              -> feat/rabbitmq-events-dashboard         20260901
 
-------------------------------------------------------------------------------------------------------
-quantum-entropy-service-go
+branch anterior              -> feat/rabbitmq-events-and-ui-fixes      20260902
 
-		branch anterior              -> feat/rabbitmq-events-dashboard         20260901
-
-		branch atual                 -> feat/rabbitmq-events-and-ui-fixes      20260902
+branch atual                 -> feat/entropy-lab-suites                20260907
 
 OBS: realizado merge da branch atual para branch main  20260907
-
-------------------------------------------------------------------------------------------------------
