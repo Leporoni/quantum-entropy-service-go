@@ -1,5 +1,5 @@
 # Progress Status — quantum-entropy-service-go
-> Atualizado: 2026-09-02
+> Atualizado: 2026-09-07
 
 ---
 
@@ -38,6 +38,7 @@ Reescrita em Go do `quantum-entropy-service` (Java/Spring Boot). Coleta entropia
 | `feat/ui-rabbitmq-dashboard` | Tab RabbitMQ no frontend + fix system status server-side | ✅ Feito |
 | `feat/rabbitmq-events-dashboard` | Publicação de eventos de chave + wire pool refill | ✅ Feito |
 | `feat/rabbitmq-events-and-ui-fixes` | Publicação de todos os eventos + fix modal export + fix delete UI | ✅ Feito |
+| `feat/entropy-lab-suites` | 4 suítes do Entropy Audit Lab (basic, min-entropy, nist, structure) + `/ui/lab` | ✅ Feito |
 
 ---
 
@@ -100,9 +101,10 @@ keymanager: após gerar ou exportar chave, verifica pool
 | `internal/quantum/` | ✅ | Cliente LfD + mixing NIST |
 | `internal/keymanager/` | ✅ | CRUD RSA + AES-256-GCM wrap + publicação de eventos |
 | `internal/messaging/` | ✅ | Topologia RabbitMQ completa |
-| `internal/audit/` | ✅ | Shannon, Chi-Square, Monte Carlo + publicação de eventos |
+| `internal/audit/` | ✅ | Shannon, Chi-Square, Monte Carlo + publicação de eventos + lab suites (`suites.go`, `validators/`) |
+| `internal/audit/validators/` | ✅ | `igamc`, min-entropy (MCV+bits), NIST 800-22 subset, structure |
 | `internal/collector/` | ✅ | Scheduler com hysteresis + TriggerRefill + publicação de eventos |
-| `internal/ui/` | ✅ | Fragmentos HTMX + delete via Service + modal export fix |
+| `internal/ui/` | ✅ | Fragmentos HTMX + delete via Service + modal export fix + rota `/ui/lab` |
 | `cmd/quantum-api/main.go` | ✅ | Entrypoint serviço 1 |
 | `cmd/keymanager/main.go` | ✅ | Entrypoint serviço 2 + OnPoolLow wired |
 | `web/static/` | ✅ | Frontend cyberpunk |
@@ -123,18 +125,50 @@ keymanager: após gerar ou exportar chave, verifica pool
 - **Correção:** Cada chave agora envolta em `<tbody id="key-row-{id}">`, delete targeta o `<tbody>` inteiro
 - **Status:** ✅ Corrigido
 
-### Eventos não publicados no RabbitMQ
+### Events not published to RabbitMQ
 - **Problema:** `EntropyNewEvent`, `AuditStartEvent`, `AuditCompleteEvent` nunca eram publicados
 - **Causa:** `collector.Scheduler` e `audit.Service` não tinham `*messaging.Publisher`
 - **Correção:** Publisher injetado em ambos, eventos publicados nos pontos corretos
 - **Status:** ✅ Corrigido
 
+### NIST Longest Run of Ones — distribuição degenerada
+- **Problema:** p-valor ~0 para qualquer entrada; bins mapeados errados contra o spec
+- **Causa:** usava **todos** os blocos do sample com bins "range" (NIST usa **número fixo** de blocos `N` sobre os primeiros `N·M` bits e bins pontuais: bin 0 = run ≤ V[0], bin K = run ≥ V[K])
+- **Correção:** blocos fixos (M=8/N=16, M=128/N=49) + mapeamento de bins fiel ao spec
+- **Status:** ✅ Corrigido
+
+### NIST Cumulative Sums — p-valor ~0 em 100% dos dados aleatórios
+- **Problema:** `NISTCumulativeSums` retornava p≈0 (às vezes ligeiramente negativo) para qualquer amostra
+- **Causa:** sinal errado no termo `sum2` (`p = 1 − sum1 − sum2`) e limites de `k` sem divisão por 4; divergência do `cusum.c` de referência do STS 2.1a
+- **Correção:** `p = 1 − sum1 + sum2`, bounds `(±n/z ± 1)/4` com divisão inteira truncada (C), e `zrev` próprio para a direção reversa
+- **Status:** ✅ Corrigido
+
+---
+
+## Entropy Audit Lab
+
+Consulta determinística (PRNG com seed fixo) e descritivo dos 4 testes no frontend:
+
+| Suíte | Mínimo recomendado | Aba | Verificação (α=0.01) |
+|-------|--------------------|-----|----------------------|
+| Basic | 8 KB | `basic` | Shannon, Chi-Square, Pi, Compression, Repetitions |
+| Min-Entropy | 1 MB | `min-entropy` | MCV (most common value), bit min-entropy | 
+| NIST SP 800-22 | 125 KB | `nist` | Monobit, Block Freq, Runs, Longest Run, Approx Entropy, Serial, Cumulative Sums (fwd+rev) |
+| Structure | 64 KB | `structure` | Bias, Autocorrelation, Runs z-score, Serial correlation |
+
+- `STANDARD: audit.RunSuites(suite, size, seed)` com registry `suiteDef` (nome, descrição, `minBytes`, runner) + `ErrUnknownSuite`
+- PRNG determinístico: `math/rand` seedado com `DefaultPRNGSeed` (=12345), reproducível por `?seed=` na URL
+- Verdicts `pass`/`warn`/`fail`; Serial usa `m` adaptativo ∈ [3,16] com `2·m·2^m ≤ n`
+- Abaixo do mínimo: banner "indicative" em vez de pass/fail formal
+- UI: tamanho por aba (até 256 KB) via `hx-get="/ui/lab?suite=..."`; `basic` mantém cards, demais usam `lab-table`
+- `RunFullAudit` e `GET /api/v1/quantum-entropy/audit` mantidos intactos; `getPrngSample(size, seed)` novo em `service.go`
+
 ---
 
 ## TODOs Pendentes
 
-- `internal/audit/service.go:92` — `TODO: Fetch actual quantum data from repository`
-- `internal/collector/scheduler.go:156` — `TODO: Add NIST SP 800-90B entropy validation here`
+- `internal/audit/service.go:118` — `TODO: Fetch actual quantum data from repository`
+- `internal/collector/scheduler.go:159` — `TODO: Add NIST SP 800-90B entropy validation here`
 
 ---
 

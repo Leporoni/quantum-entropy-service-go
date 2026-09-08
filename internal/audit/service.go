@@ -70,7 +70,7 @@ func (s *Service) RunFullAudit(requestedSize int) (*AuditReport, error) {
 	// 2. Audit Local PRNGs (using the same sample size for fair comparison)
 	if realSampleSize > 0 {
 		results = append(results, auditSource("Java SecureRandom (CSPRNG)", getCsprngSample(realSampleSize)))
-		results = append(results, auditSource("Java Random (LCRNG)", getPrngSample(realSampleSize)))
+		results = append(results, auditSource("Java Random (LCRNG)", getPrngSample(realSampleSize, DefaultPRNGSeed)))
 	}
 
 	report := &AuditReport{
@@ -143,9 +143,15 @@ func getCsprngSample(size int) []byte {
 	return sample
 }
 
-func getPrngSample(size int) []byte {
+// getPrngSample returns a pseudo-random sample from math/rand, deterministically
+// seeded so audits and lab suites are replicable between runs.
+func getPrngSample(size int, seed int64) []byte {
+	r := mrand.New(mrand.NewSource(seed))
 	sample := make([]byte, size)
-	mrand.Read(sample)
+	if _, err := r.Read(sample); err != nil {
+		// math/rand.Read never returns an error.
+		_ = err
+	}
 	return sample
 }
 
