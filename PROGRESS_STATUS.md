@@ -39,6 +39,7 @@ Reescrita em Go do `quantum-entropy-service` (Java/Spring Boot). Coleta entropia
 | `feat/rabbitmq-events-dashboard` | Publicação de eventos de chave + wire pool refill | ✅ Feito |
 | `feat/rabbitmq-events-and-ui-fixes` | Publicação de todos os eventos + fix modal export + fix delete UI | ✅ Feito |
 | `feat/entropy-lab-suites` | 4 suítes do Entropy Audit Lab (basic, min-entropy, nist, structure) + `/ui/lab` | ✅ Feito |
+| `fix/dockerfile-remove-go-mod-tidy` | Remove `RUN go mod tidy` do build Docker (falha DNS de deps de teste) | ✅ Feito |
 
 ---
 
@@ -162,6 +163,15 @@ Consulta determinística (PRNG com seed fixo) e descritivo dos 4 testes no front
 - Abaixo do mínimo: banner "indicative" em vez de pass/fail formal
 - UI: tamanho por aba (até 256 KB) via `hx-get="/ui/lab?suite=..."`; `basic` mantém cards, demais usam `lab-table`
 - `RunFullAudit` e `GET /api/v1/quantum-entropy/audit` mantidos intactos; `getPrngSample(size, seed)` novo em `service.go`
+
+---
+
+## Docker Build — Correção de Falha
+
+- **Problema:** `RUN go mod tidy` no build falhava com `lookup proxy.golang.org: no such host`
+- **Causa:** O `tidy` tenta baixar deps de teste transitivas de libs de terceiros (testify, goleak, mock, go-cmp) que não estão no `go.sum` — blob de rede bloqueado no container
+- **Fix:** Removido `RUN go mod tidy` de `Dockerfile.api` e `Dockerfile.keymanager`; `go.sum` já está completo (verificado com `go mod verify` + `go build ./...`)
+- **Status:** ✅ Corrigido (branch `fix/dockerfile-remove-go-mod-tidy`)
 
 ---
 
