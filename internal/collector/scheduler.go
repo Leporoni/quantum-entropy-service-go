@@ -180,6 +180,17 @@ func (s *Scheduler) fetchAndSave() bool {
 		if err := s.pub.Publish(messaging.ExchangeEntropyCollected, messaging.RoutingKeyEntropyNew, evt); err != nil {
 			slog.Warn("Failed to publish entropy.new event", "error", err)
 		}
+
+		evt2 := messaging.EntropyValidatedEvent{
+			ID:        quantumData.ID,
+			Source:    "LFD",
+			ByteCount: len(decoded),
+			PoolSize:  int64(quantumData.ID),
+			Timestamp: time.Now(),
+		}
+		if err := s.pub.Publish(messaging.ExchangeEntropyCollected, messaging.RoutingKeyEntropyValidated, evt2); err != nil {
+			slog.Warn("Failed to publish entropy.validated event", "error", err)
+		}
 	}
 
 	slog.Info("✅ Entropy saved",
