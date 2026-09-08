@@ -49,6 +49,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	ui.DELETE("/keys/:id", h.deleteKey)
 	ui.POST("/keys/:id/export", h.exportKey)
 	ui.GET("/audit", h.runAudit)
+	ui.GET("/lab", h.runLab)
 }
 
 // GET /ui/pool-status — entropy pool card fragment
@@ -227,6 +228,92 @@ func (h *Handler) runAudit(c *gin.Context) {
 
 	sb.WriteString(`</div>`)
 	c.Data(http.StatusOK, "text/html", []byte(sb.String()))
+}
+
+// GET /ui/lab?suite=basic|min-entropy|nist|structure&size=N&seed=S — lab suite fragment
+func (h *Handler) runLab(c *gin.Context) {
+	suite := c.Query("suite")
+	if suite == "" {
+		suite = "basic"
+	}
+	size, _ := strconv.Atoi(c.Query("size"))
+	if size <= 0 {
+		size = 8192
+	}
+	seed, _ := strconv.ParseInt(c.Query("seed"), 10, 64)
+
+	result, err := h.auditSvc.RunSuites(suite, size, seed)
+	if err != nil {
+		c.Data(http.StatusOK, "text/html", []byte(fmt.Sprintf(`
+<div class="empty-state">⚠️ %s</div>`, err.Error())))
+		return
+	}
+	if len(result.Results) == 0 {
+		c.Data(http.StatusOK, "text/html", []byte(`
+<div class="empty-state">⚠️ No quantum data in pool yet. Wait for pool to fill.</div>`))
+		return
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf(`
+<div class="lab-meta">
+  <div><span class="lab-meta-label">SUITE</span><span class="lab-meta-value">%s</span></div>
+  <div><span class="lab-meta-label">SAMPLE SIZE</span><span class="lab-meta-value">%d bytes</span></div>
+  <div><span class="lab-meta-label">MIN REC</span><span class="lab-meta-value">%s</span></div>
+  <div><span class="lab-meta-label">DESCRIPTION</span><span class="lab-meta-value">%s</span></div>
+</div>`, result.Name, result.SampleSize, result.MinNote, result.Description))
+
+	if result.Indicative {
+		sb.WriteString(`
+<div class="lab-banner">⚠️ Sample below the suite's recommended minimum — result is <strong>indicative</strong>, not a formal pass/fail.</div>`)
+	}
+
+	if suite == "basic" {
+		sb.WriteString(`<div class="audit-grid">`)
+		for _, sr := range result.Results {
+			sb.WriteString(fmt.Sprintf(`
+<div class="audit-card">
+  <h3>%s</h3>`, sr.Source))
+			for _, m := range sr.Metrics {
+				sb.WriteString(fmt.Sprintf(`
+  <div class="metric-row"><span class="metric-label">%s</span><span class="metric-value">%s <span class="verdict verdict-%s">%s</span></span></div>`,
+					m.Name, m.Value, m.Verdict, verdictLabel(m.Verdict)))
+			}
+			sb.WriteString(`
+</div>`)
+		}
+		sb.WriteString(`</div>`)
+	} else {
+		sb.WriteString(`<table class="lab-table">
+<thead><tr><th style="width:22%%">Source</th><th>Metric</th><th>Value</th><th>Reference</th><th>Verdict</th></tr></thead><tbody>`)
+		for _, sr := range result.Results {
+			sb.WriteString(fmt.Sprintf(`<tr class="lab-source-row"><td colspan="5" class="lab-source">▸ %s</td></tr>`, sr.Source))
+			for _, m := range sr.Metrics {
+				sb.WriteString(fmt.Sprintf(`<tr>
+  <td></td>
+  <td>%s</td>
+  <td>%s</td>
+  <td>%s</td>
+  <td><span class="verdict verdict-%s">%s</span></td>
+</tr>`, m.Name, m.Value, m.Reference, m.Verdict, verdictLabel(m.Verdict)))
+			}
+		}
+		sb.WriteString(`</tbody></table>`)
+	}
+
+	c.Data(http.StatusOK, "text/html", []byte(sb.String()))
+}
+
+// verdictLabel renders a Verdict as an uppercase label for the UI.
+func verdictLabel(v audit.Verdict) string {
+	switch v {
+	case audit.VerdictPass:
+		return "PASS"
+	case audit.VerdictWarn:
+		return "WARN"
+	default:
+		return "FAIL"
+	}
 }
 
 // GET /ui/system-status — system status card fragment (checks services server-side)

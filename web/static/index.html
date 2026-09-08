@@ -113,30 +113,137 @@
     <!-- ===== ENTROPY LAB ===== -->
     <section id="tab-entropylab" class="tab-section hidden">
       <div class="card">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1.5rem">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">
           <h2>// ENTROPY AUDIT LAB</h2>
-          <div style="display:flex;gap:0.75rem;align-items:center">
-            <select id="audit-size" class="form-input" style="width:auto">
-              <option value="1024">1 KB</option>
-              <option value="4096">4 KB</option>
-              <option value="8192" selected>8 KB</option>
-              <option value="16384">16 KB</option>
-            </select>
-            <button class="btn-primary"
-                    hx-get="/ui/audit"
-                    hx-vals='js:{"size": document.getElementById("audit-size").value}'
-                    hx-target="#audit-results"
-                    hx-swap="innerHTML"
-                    hx-indicator="#audit-spinner">
-              ▶ Run Audit
-            </button>
-            <span id="audit-spinner" class="htmx-indicator loading-text">Running...</span>
+          <span style="font-size:0.75rem;color:var(--text-secondary);font-family:var(--font-mono)">PRNG deterministically seeded (replicable)</span>
+        </div>
+        <div class="lab-tabs">
+          <button class="lab-tab-btn active" onclick="showLabTab('basic', event)">Basic</button>
+          <button class="lab-tab-btn" onclick="showLabTab('min-entropy', event)">Min-Entropy</button>
+          <button class="lab-tab-btn" onclick="showLabTab('nist', event)">NIST 800-22</button>
+          <button class="lab-tab-btn" onclick="showLabTab('structure', event)">Structure</button>
+        </div>
+      </div>
+
+      <!-- Basic -->
+      <div class="card">
+        <div class="lab-pane" id="lab-pane-basic">
+          <div class="lab-pane-header">
+            <div>
+              <h3 style="color:var(--neon-cyan);font-family:var(--font-mono);margin-bottom:0.25rem">// BASIC</h3>
+              <p style="font-size:0.78rem;color:var(--text-secondary)">Global statistical metrics with automatic pass/warn/fail verdicts.</p>
+            </div>
+            <div style="display:flex;gap:0.75rem;align-items:center;margin-left:auto">
+              <select id="lab-size-basic" class="form-input" style="width:auto">
+                <option value="1024">1 KB</option>
+                <option value="4096">4 KB</option>
+                <option value="8192" selected>8 KB</option>
+                <option value="16384">16 KB</option>
+                <option value="32768">32 KB</option>
+                <option value="65536">64 KB</option>
+                <option value="131072">128 KB</option>
+                <option value="262144">256 KB</option>
+              </select>
+              <button class="btn-primary" hx-get="/ui/lab?suite=basic"
+                      hx-vals='js:{"size": document.getElementById("lab-size-basic").value}'
+                      hx-target="#lab-results-basic" hx-swap="innerHTML"
+                      hx-indicator="#lab-spinner-basic">▶ Run</button>
+              <span id="lab-spinner-basic" class="htmx-indicator loading-text">Running...</span>
+            </div>
+          </div>
+          <div id="lab-results-basic">
+            <p class="loading-text" style="text-align:center;padding:2rem 0">Click Run to evaluate this suite.</p>
           </div>
         </div>
-        <div id="audit-results">
-          <p class="loading-text" style="text-align:center;padding:3rem 0">
-            Click "Run Audit" to compare Quantum vs CSPRNG vs PRNG entropy sources.
-          </p>
+
+        <!-- Min-Entropy -->
+        <div class="lab-pane hidden" id="lab-pane-min-entropy">
+          <div class="lab-pane-header">
+            <div>
+              <h3 style="color:var(--neon-cyan);font-family:var(--font-mono);margin-bottom:0.25rem">// MIN-ENTROPY</h3>
+              <p style="font-size:0.78rem;color:var(--text-secondary)">NIST SP 800-90B most-common-value estimates. Best with ≥ 1M samples.</p>
+            </div>
+            <div style="display:flex;gap:0.75rem;align-items:center;margin-left:auto">
+              <select id="lab-size-min-entropy" class="form-input" style="width:auto">
+                <option value="1024">1 KB</option>
+                <option value="4096">4 KB</option>
+                <option value="8192">8 KB</option>
+                <option value="16384">16 KB</option>
+                <option value="32768">32 KB</option>
+                <option value="65536" selected>64 KB</option>
+                <option value="131072">128 KB</option>
+                <option value="262144">256 KB</option>
+              </select>
+              <button class="btn-primary" hx-get="/ui/lab?suite=min-entropy"
+                      hx-vals='js:{"size": document.getElementById("lab-size-min-entropy").value}'
+                      hx-target="#lab-results-min-entropy" hx-swap="innerHTML"
+                      hx-indicator="#lab-spinner-min-entropy">▶ Run</button>
+              <span id="lab-spinner-min-entropy" class="htmx-indicator loading-text">Running...</span>
+            </div>
+          </div>
+          <div id="lab-results-min-entropy">
+            <p class="loading-text" style="text-align:center;padding:2rem 0">Click Run to evaluate this suite.</p>
+          </div>
+        </div>
+
+        <!-- NIST -->
+        <div class="lab-pane hidden" id="lab-pane-nist">
+          <div class="lab-pane-header">
+            <div>
+              <h3 style="color:var(--neon-cyan);font-family:var(--font-mono);margin-bottom:0.25rem">// NIST SP 800-22</h3>
+              <p style="font-size:0.78rem;color:var(--text-secondary)">Practical subset of randomness tests (p-values, α=0.01).</p>
+            </div>
+            <div style="display:flex;gap:0.75rem;align-items:center;margin-left:auto">
+              <select id="lab-size-nist" class="form-input" style="width:auto">
+                <option value="1024">1 KB</option>
+                <option value="4096">4 KB</option>
+                <option value="8192">8 KB</option>
+                <option value="16384">16 KB</option>
+                <option value="32768">32 KB</option>
+                <option value="65536">64 KB</option>
+                <option value="131072">128 KB</option>
+                <option value="262144" selected>256 KB</option>
+              </select>
+              <button class="btn-primary" hx-get="/ui/lab?suite=nist"
+                      hx-vals='js:{"size": document.getElementById("lab-size-nist").value}'
+                      hx-target="#lab-results-nist" hx-swap="innerHTML"
+                      hx-indicator="#lab-spinner-nist">▶ Run</button>
+              <span id="lab-spinner-nist" class="htmx-indicator loading-text">Running...</span>
+            </div>
+          </div>
+          <div id="lab-results-nist">
+            <p class="loading-text" style="text-align:center;padding:2rem 0">Click Run to evaluate this suite.</p>
+          </div>
+        </div>
+
+        <!-- Structure -->
+        <div class="lab-pane hidden" id="lab-pane-structure">
+          <div class="lab-pane-header">
+            <div>
+              <h3 style="color:var(--neon-cyan);font-family:var(--font-mono);margin-bottom:0.25rem">// STRUCTURE</h3>
+              <p style="font-size:0.78rem;color:var(--text-secondary)">Order/correlation analysis: bit bias, autocorrelation, runs and serial correlation.</p>
+            </div>
+            <div style="display:flex;gap:0.75rem;align-items:center;margin-left:auto">
+              <select id="lab-size-structure" class="form-input" style="width:auto">
+                <option value="1024">1 KB</option>
+                <option value="4096">4 KB</option>
+                <option value="8192">8 KB</option>
+                <option value="16384">16 KB</option>
+                <option value="32768" selected>32 KB</option>
+                <option value="65536">64 KB</option>
+                <option value="131072">128 KB</option>
+                <option value="262144">256 KB</option>
+              </select>
+              <button class="btn-primary" hx-get="/ui/lab?suite=structure"
+                      hx-vals='js:{"size": document.getElementById("lab-size-structure").value}'
+                      hx-target="#lab-results-structure" hx-swap="innerHTML"
+                      hx-indicator="#lab-spinner-structure">▶ Run</button>
+              <span id="lab-spinner-structure" class="htmx-indicator loading-text">Running...</span>
+            </div>
+          </div>
+          <div id="lab-results-structure">
+            <p class="loading-text" style="text-align:center;padding:2rem 0">Click Run to evaluate this suite.</p>
+          </div>
         </div>
       </div>
     </section>
@@ -192,6 +299,13 @@
       document.querySelectorAll('.tab-section').forEach(s => s.classList.add('hidden'));
       document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
       document.getElementById('tab-' + name).classList.remove('hidden');
+      event.target.classList.add('active');
+    }
+
+    function showLabTab(name, event) {
+      document.querySelectorAll('.lab-pane').forEach(p => p.classList.add('hidden'));
+      document.querySelectorAll('.lab-tab-btn').forEach(b => b.classList.remove('active'));
+      document.getElementById('lab-pane-' + name).classList.remove('hidden');
       event.target.classList.add('active');
     }
 
