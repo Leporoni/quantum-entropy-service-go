@@ -2,6 +2,8 @@ branch anterior              -> feat/rabbitmq-events-dashboard         20260901
 
 branch anterior              -> feat/rabbitmq-events-and-ui-fixes      20260902
 
-branch atual                 -> feat/entropy-lab-suites                20260907
+branch anterior              -> feat/entropy-lab-suites                20260907
 
-OBS: realizado merge da branch atual para branch main  20260907
+branch atual                 -> fix/dockerfile-remove-go-mod-tidy      20260908
+
+OBS: realizar merge da branch atual para branch main
