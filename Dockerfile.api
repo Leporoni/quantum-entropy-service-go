@@ -11,9 +11,8 @@ COPY go.mod go.sum ./
 # Download prévio para cache de camadas
 RUN go mod download
 
-# Agora copiamos o código e alinhamos as dependências
+# Agora copiamos o código e compilamos
 COPY . .
-RUN go mod tidy
 RUN CGO_ENABLED=1 GOOS=linux go build -o /quantum-api ./cmd/quantum-api
 
 # ===== RUN STAGE =====
