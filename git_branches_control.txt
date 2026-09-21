@@ -8,4 +8,4 @@ branch anterior              -> fix/dockerfile-remove-go-mod-tidy      20260908
 
 branch atual                 -> feat/audit-events-for-lab-suites       20260921
 
-OBS: realizar merge da branch atual para branch main
+OBS: realizado merge da branch atual para branch main 20260921
