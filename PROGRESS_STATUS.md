@@ -40,6 +40,7 @@ Reescrita em Go do `quantum-entropy-service` (Java/Spring Boot). Coleta entropia
 | `feat/rabbitmq-events-and-ui-fixes` | Publicação de todos os eventos + fix modal export + fix delete UI | ✅ Feito |
 | `feat/entropy-lab-suites` | 4 suítes do Entropy Audit Lab (basic, min-entropy, nist, structure) + `/ui/lab` | ✅ Feito |
 | `fix/dockerfile-remove-go-mod-tidy` | Remove `RUN go mod tidy` do build Docker (falha DNS de deps de teste) | ✅ Feito |
+| `feat/audit-events-for-lab-suites` | Publica `audit.start`/`audit.complete` quando suites do Entropy Lab rodam | ✅ Feito |
 
 ---
 
@@ -88,8 +89,8 @@ keymanager: após gerar ou exportar chave, verifica pool
 | `key.events` | `key.created` | `KeyCreatedEvent` | `keymanager/service.go` |
 | `key.events` | `key.exported` | `KeyExportedEvent` | `keymanager/service.go` |
 | `key.events` | `key.deleted` | `KeyDeletedEvent` | `keymanager/service.go` (via UI) |
-| `audit.requests` | `audit.start` | `AuditStartEvent` | `audit/service.go` |
-| `audit.results` | `audit.complete` | `AuditCompleteEvent` | `audit/service.go` |
+| `audit.requests` | `audit.start` | `AuditStartEvent` | `audit/service.go` + `audit/suites.go` |
+| `audit.results` | `audit.complete` | `AuditCompleteEvent` | `audit/service.go` + `audit/suites.go` |
 | `entropy.pool` | `entropy.pool.low` | `PoolLowEvent` | `keymanager/service.go` |
 | `entropy.pool` | `entropy.pool.ok` | `PoolOkEvent` | `keymanager/service.go` |
 

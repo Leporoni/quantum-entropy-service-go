@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"time"
 
 	"github.com/leporoni/quantum-entropy-go-service/internal/audit/validators"
+	"github.com/leporoni/quantum-entropy-go-service/internal/messaging"
 )
 
 const DefaultPRNGSeed int64 = 12345
@@ -114,6 +116,16 @@ func (s *Service) RunSuites(suiteID string, requestedSize int, seed int64) (*Sui
 
 	slog.Info("Starting Entropy Lab Suite", "suite", suiteID, "requestedSize", requestedSize, "seed", seed)
 
+	if s.pub != nil {
+		evt := messaging.AuditStartEvent{
+			RequestedSize: requestedSize,
+			Timestamp:     time.Now(),
+		}
+		if err := s.pub.Publish(messaging.ExchangeAuditRequests, messaging.RoutingKeyAuditStart, evt); err != nil {
+			slog.Warn("Failed to publish audit.start event", "error", err)
+		}
+	}
+
 	var results []SourceResult
 	realSampleSize := 0
 
@@ -134,7 +146,7 @@ func (s *Service) RunSuites(suiteID string, requestedSize int, seed int64) (*Sui
 		})
 	}
 
-	return &SuiteResult{
+	result := &SuiteResult{
 		SuiteID:     def.id,
 		Name:        def.name,
 		Description: def.description,
@@ -142,7 +154,20 @@ func (s *Service) RunSuites(suiteID string, requestedSize int, seed int64) (*Sui
 		SampleSize:  realSampleSize,
 		Indicative:  realSampleSize < def.minBytes,
 		Results:     results,
-	}, nil
+	}
+
+	if s.pub != nil {
+		evt := messaging.AuditCompleteEvent{
+			SampleSize: realSampleSize,
+			Results:    result,
+			Timestamp:  time.Now(),
+		}
+		if err := s.pub.Publish(messaging.ExchangeAuditResults, messaging.RoutingKeyAuditComplete, evt); err != nil {
+			slog.Warn("Failed to publish audit.complete event", "error", err)
+		}
+	}
+
+	return result, nil
 }
 
 // ---- verdict helpers ----
