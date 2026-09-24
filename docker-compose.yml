@@ -32,6 +32,7 @@ services:
       - MASTER_KEY_SECRET=super_secret_master_key_change_me_in_prod
       - API_BASE_URL=http://quantum-api:8081
       - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
+      - PANIC_DEBUG=true    # habilita o endpoint canário /debug/panic (dev/demo)
     depends_on:
       rabbitmq:
         condition: service_healthy
