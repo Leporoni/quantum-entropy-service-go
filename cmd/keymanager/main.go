@@ -35,7 +35,7 @@ func main() {
 	}
 
 	// RabbitMQ
-	var pub *messaging.Publisher
+	var pub messaging.EventPublisher
 	mqConn, err := messaging.NewConnection(rabbitmqURL)
 	if err != nil {
 		slog.Warn("RabbitMQ unavailable, continuing without messaging", "error", err)
@@ -51,7 +51,7 @@ func main() {
 	// Entropy collector (background goroutine)
 	scheduler := collector.NewScheduler(repo, apiBaseURL, pub)
 
-	svc, err := keymanager.NewService(repo, masterKeySecret, pub)
+	svc, err := keymanager.NewService(repo, repo, masterKeySecret, pub)
 	if err != nil {
 		slog.Error("Failed to initialize service", "error", err)
 		os.Exit(1)
@@ -68,7 +68,7 @@ func main() {
 
 	// HTTP server
 	kmHandler := keymanager.NewHandler(svc, repo)
-	uiHandler := ui.NewHandler(svc, repo, auditSvc)
+	uiHandler := ui.NewHandler(svc, repo, repo, auditSvc)
 
 	r := gin.New()
 	r.Use(gin.Logger(), middleware.Recovery())

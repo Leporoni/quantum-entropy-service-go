@@ -10,12 +10,12 @@ import (
 // Handler exposes the keymanager REST API via Gin.
 type Handler struct {
 	svc  *Service
-	repo *Repository
+	keys KeyStore
 }
 
 // NewHandler creates a new Handler.
-func NewHandler(svc *Service, repo *Repository) *Handler {
-	return &Handler{svc: svc, repo: repo}
+func NewHandler(svc *Service, keys KeyStore) *Handler {
+	return &Handler{svc: svc, keys: keys}
 }
 
 // RegisterRoutes registers all keymanager routes on the given RouterGroup.
@@ -60,7 +60,7 @@ func (h *Handler) generateKey(c *gin.Context) {
 
 // GET /keys
 func (h *Handler) listKeys(c *gin.Context) {
-	keys, err := h.repo.FindAllKeys()
+	keys, err := h.keys.FindAllKeys()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

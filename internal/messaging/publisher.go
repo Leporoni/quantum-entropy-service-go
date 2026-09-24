@@ -10,6 +10,16 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
+// EventPublisher publishes events to RabbitMQ exchanges.
+// *Publisher satisfies it implicitly; consumers depend on the
+// abstraction so they can be tested with mocks.
+type EventPublisher interface {
+	Publish(exchange, routingKey string, event interface{}) error
+}
+
+// Compile-time assertion: *Publisher satisfies EventPublisher.
+var _ EventPublisher = (*Publisher)(nil)
+
 // Publisher publishes events to RabbitMQ exchanges.
 type Publisher struct {
 	conn *Connection

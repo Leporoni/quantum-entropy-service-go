@@ -27,9 +27,10 @@ const (
 
 // Service handles RSA key generation and AES-256-GCM key wrapping.
 type Service struct {
-	repo      *Repository
+	store     EntropyStore
+	keys      KeyStore
 	masterKey []byte // 32-byte AES-256 master key derived from MASTER_KEY_SECRET
-	pub       *messaging.Publisher
+	pub       messaging.EventPublisher
 	// OnPoolLow, when set, is invoked whenever the pool drops below the low watermark.
 	// Used by the entrypoint to trigger an immediate scheduler refill (no consumer loop).
 	OnPoolLow func()
@@ -38,12 +39,12 @@ type Service struct {
 // NewService creates a new keymanager Service.
 // masterKeySecret is the raw secret from env; it is SHA-256 hashed to produce a 32-byte AES key.
 // pub may be nil (messaging disabled).
-func NewService(repo *Repository, masterKeySecret string, pub *messaging.Publisher) (*Service, error) {
+func NewService(store EntropyStore, keys KeyStore, masterKeySecret string, pub messaging.EventPublisher) (*Service, error) {
 	if masterKeySecret == "" {
 		return nil, errors.New("MASTER_KEY_SECRET must not be empty")
 	}
 	hash := sha256.Sum256([]byte(masterKeySecret))
-	return &Service{repo: repo, masterKey: hash[:], pub: pub}, nil
+	return &Service{store: store, keys: keys, masterKey: hash[:], pub: pub}, nil
 }
 
 // GenerateKey creates a new RSA key pair using quantum entropy as the seed source.
@@ -54,7 +55,7 @@ func (s *Service) GenerateKey(alias string, keySize int) (*RsaKey, error) {
 	}
 
 	// Consume quantum entropy to seed the generation
-	entropyRecords, err := s.repo.ConsumeEntropy(entropyPerKey)
+	entropyRecords, err := s.store.ConsumeEntropy(entropyPerKey)
 	if err != nil {
 		return nil, fmt.Errorf("pool exhausted: %w", err)
 	}
@@ -92,7 +93,7 @@ func (s *Service) GenerateKey(alias string, keySize int) (*RsaKey, error) {
 		EncryptedPrivatePEM: encrypted,
 		Nonce:               nonce,
 	}
-	if err := s.repo.SaveKey(key); err != nil {
+	if err := s.keys.SaveKey(key); err != nil {
 		return nil, fmt.Errorf("failed to persist key: %w", err)
 	}
 
@@ -106,7 +107,7 @@ func (s *Service) GenerateKey(alias string, keySize int) (*RsaKey, error) {
 // ExportPrivateKey decrypts and returns the PEM-encoded private key for the given key ID.
 // Consumes quantum entropy for the wrapping operation.
 func (s *Service) ExportPrivateKey(id uint) ([]byte, error) {
-	key, err := s.repo.FindKeyByID(id)
+	key, err := s.keys.FindKeyByID(id)
 	if err != nil {
 		return nil, err
 	}
@@ -115,7 +116,7 @@ func (s *Service) ExportPrivateKey(id uint) ([]byte, error) {
 	}
 
 	// Consume entropy for the export operation
-	if _, err := s.repo.ConsumeEntropy(entropyPerExport); err != nil {
+	if _, err := s.store.ConsumeEntropy(entropyPerExport); err != nil {
 		return nil, fmt.Errorf("pool exhausted for export: %w", err)
 	}
 
@@ -133,12 +134,12 @@ func (s *Service) ExportPrivateKey(id uint) ([]byte, error) {
 
 // PoolStatus returns the current count of unused entropy records.
 func (s *Service) PoolStatus() (int64, error) {
-	return s.repo.CountAllUnusedEntropy()
+	return s.store.CountAllUnusedEntropy()
 }
 
 // DeleteKey removes a single key and publishes a key.deleted event.
 func (s *Service) DeleteKey(id uint) error {
-	key, err := s.repo.FindKeyByID(id)
+	key, err := s.keys.FindKeyByID(id)
 	if err != nil {
 		return err
 	}
@@ -146,7 +147,7 @@ func (s *Service) DeleteKey(id uint) error {
 		return errors.New("key not found")
 	}
 
-	if err := s.repo.DeleteKeyByID(id); err != nil {
+	if err := s.keys.DeleteKeyByID(id); err != nil {
 		return err
 	}
 
@@ -157,12 +158,12 @@ func (s *Service) DeleteKey(id uint) error {
 
 // DeleteAllKeys removes all keys, publishing a key.deleted event per removed key.
 func (s *Service) DeleteAllKeys() error {
-	keys, err := s.repo.FindAllKeys()
+	keys, err := s.keys.FindAllKeys()
 	if err != nil {
 		return err
 	}
 
-	if err := s.repo.DeleteAllKeys(); err != nil {
+	if err := s.keys.DeleteAllKeys(); err != nil {
 		return err
 	}
 
@@ -188,7 +189,7 @@ func (s *Service) checkAndPublishPoolEvent() {
 	if s.pub == nil {
 		return
 	}
-	count, err := s.repo.CountAllUnusedEntropy()
+	count, err := s.store.CountAllUnusedEntropy()
 	if err != nil {
 		slog.Warn("Failed to count entropy for pool event", "error", err)
 		return

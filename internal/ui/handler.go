@@ -23,13 +23,14 @@ var httpClient = &http.Client{Timeout: 3 * time.Second}
 // Handler serves HTMX HTML fragments for the cyberpunk frontend.
 type Handler struct {
 	svc      *keymanager.Service
-	repo     *keymanager.Repository
+	store    keymanager.EntropyStore
+	keys     keymanager.KeyStore
 	auditSvc *audit.Service
 }
 
 // NewHandler creates a new UI Handler.
-func NewHandler(svc *keymanager.Service, repo *keymanager.Repository, auditSvc *audit.Service) *Handler {
-	return &Handler{svc: svc, repo: repo, auditSvc: auditSvc}
+func NewHandler(svc *keymanager.Service, store keymanager.EntropyStore, keys keymanager.KeyStore, auditSvc *audit.Service) *Handler {
+	return &Handler{svc: svc, store: store, keys: keys, auditSvc: auditSvc}
 }
 
 // RegisterRoutes registers all UI routes on the Gin engine.
@@ -54,7 +55,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 // GET /ui/pool-status — entropy pool card fragment
 func (h *Handler) poolStatus(c *gin.Context) {
-	count, _ := h.repo.CountAllUnusedEntropy()
+	count, _ := h.store.CountAllUnusedEntropy()
 	pct := int(math.Min(float64(count)/float64(poolMax)*100, 100))
 
 	color := "var(--neon-cyan)"
@@ -80,7 +81,7 @@ func (h *Handler) poolStatus(c *gin.Context) {
 
 // GET /ui/keys — keys table fragment
 func (h *Handler) listKeys(c *gin.Context) {
-	keys, err := h.repo.FindAllKeys()
+	keys, err := h.keys.FindAllKeys()
 	if err != nil || len(keys) == 0 {
 		c.Data(http.StatusOK, "text/html", []byte(`
 <div class="empty-state">No keys in vault. Generate one above.</div>`))
