@@ -6,6 +6,8 @@ branch anterior              -> feat/entropy-lab-suites                20260907
 
 branch anterior              -> fix/dockerfile-remove-go-mod-tidy      20260908
 
-branch atual                 -> feat/audit-events-for-lab-suites       20260921
+branch anterior              -> feat/audit-events-for-lab-suites       20260921
 
-OBS: realizado merge da branch atual para branch main 20260921
+branch atual                 -> feat/panic-recover-middleware          20260924
+
+OBS: realizar merge da branch atual para branch main
