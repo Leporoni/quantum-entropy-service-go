@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -42,8 +43,14 @@ func main() {
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
+	// WaitGroup: the main goroutine waits for the server goroutine to
+	// actually finish (not just for Shutdown to drain connections).
+	var wg sync.WaitGroup
 	srvErr := make(chan error, 1)
+
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		slog.Info("🚀 quantum-api starting", "port", port)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			srvErr <- err
@@ -62,6 +69,7 @@ func main() {
 			slog.Error("Graceful shutdown failed", "error", err)
 			os.Exit(1)
 		}
+		wg.Wait() // wait for the server goroutine to exit for real
 		slog.Info("Server stopped")
 	}
 }

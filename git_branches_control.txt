@@ -10,6 +10,8 @@ branch anterior              -> feat/audit-events-for-lab-suites       20260921
 
 branch anterior              -> feat/panic-recover-middleware          20260924
 
-branch atual                 -> feat/interfaces-abstraction            20260924
+branch anterior              -> feat/interfaces-abstraction            20260924
+
+branch atual                 -> feat/waitgroup-graceful-shutdown       20260925
 
 OBS: realizar merge da branch atual para branch main
