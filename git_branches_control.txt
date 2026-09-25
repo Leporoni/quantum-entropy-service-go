@@ -8,6 +8,8 @@ branch anterior              -> fix/dockerfile-remove-go-mod-tidy      20260908
 
 branch anterior              -> feat/audit-events-for-lab-suites       20260921
 
-branch atual                 -> feat/panic-recover-middleware          20260924
+branch anterior              -> feat/panic-recover-middleware          20260924
+
+branch atual                 -> feat/interfaces-abstraction            20260924
 
 OBS: realizar merge da branch atual para branch main
