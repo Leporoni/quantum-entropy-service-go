@@ -34,13 +34,13 @@ type AuditReport struct {
 
 // Service performs entropy quality audits across multiple sources.
 type Service struct {
-	repo *keymanager.Repository
-	pub  *messaging.Publisher
+	store keymanager.EntropyStore
+	pub   messaging.EventPublisher
 }
 
 // NewService creates a new audit Service.
-func NewService(repo *keymanager.Repository, pub *messaging.Publisher) *Service {
-	return &Service{repo: repo, pub: pub}
+func NewService(store keymanager.EntropyStore, pub messaging.EventPublisher) *Service {
+	return &Service{store: store, pub: pub}
 }
 
 // RunFullAudit runs a multi-source entropy audit comparing quantum vs. PRNG sources.
@@ -117,7 +117,7 @@ func auditSource(name string, data []byte) AuditMetrics {
 func (s *Service) getQuantumSample(source string, size int) ([]byte, error) {
 	// TODO: Fetch actual quantum data from repository
 	// This is a placeholder - will mirror the Java getQuantumSample logic
-	data, err := s.repo.FindAllUnusedBySource(source)
+	data, err := s.store.FindAllUnusedBySource(source)
 	if err != nil || len(data) == 0 {
 		return nil, fmt.Errorf("no quantum data available for source: %s", source)
 	}

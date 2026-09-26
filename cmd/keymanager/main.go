@@ -9,6 +9,7 @@ import (
 	"github.com/leporoni/quantum-entropy-go-service/internal/collector"
 	"github.com/leporoni/quantum-entropy-go-service/internal/keymanager"
 	"github.com/leporoni/quantum-entropy-go-service/internal/messaging"
+	"github.com/leporoni/quantum-entropy-go-service/internal/middleware"
 	"github.com/leporoni/quantum-entropy-go-service/internal/ui"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -34,7 +35,7 @@ func main() {
 	}
 
 	// RabbitMQ
-	var pub *messaging.Publisher
+	var pub messaging.EventPublisher
 	mqConn, err := messaging.NewConnection(rabbitmqURL)
 	if err != nil {
 		slog.Warn("RabbitMQ unavailable, continuing without messaging", "error", err)
@@ -50,7 +51,7 @@ func main() {
 	// Entropy collector (background goroutine)
 	scheduler := collector.NewScheduler(repo, apiBaseURL, pub)
 
-	svc, err := keymanager.NewService(repo, masterKeySecret, pub)
+	svc, err := keymanager.NewService(repo, repo, masterKeySecret, pub)
 	if err != nil {
 		slog.Error("Failed to initialize service", "error", err)
 		os.Exit(1)
@@ -67,13 +68,22 @@ func main() {
 
 	// HTTP server
 	kmHandler := keymanager.NewHandler(svc, repo)
-	uiHandler := ui.NewHandler(svc, repo, auditSvc)
+	uiHandler := ui.NewHandler(svc, repo, repo, auditSvc)
 
-	r := gin.Default()
+	r := gin.New()
+	r.Use(gin.Logger(), middleware.Recovery())
 
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "ok", "service": "keymanager"})
 	})
+
+	// Canary endpoint to demonstrate the custom Recovery middleware.
+	// Only registered when PANIC_DEBUG=true (never expose panics in production).
+	if getEnv("PANIC_DEBUG", "") == "true" {
+		r.GET("/debug/panic", func(c *gin.Context) {
+			panic("boom") // triggers the recover in middleware.Recovery()
+		})
+	}
 
 	uiHandler.RegisterRoutes(r)
 

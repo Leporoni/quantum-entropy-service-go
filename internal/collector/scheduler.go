@@ -16,8 +16,8 @@ import (
 // Scheduler collects quantum entropy from the Quantum API and stores it in the database.
 // Implements hysteresis logic: refill when below lowWatermark, stop when above highWatermark.
 type Scheduler struct {
-	repo          *keymanager.Repository
-	pub           *messaging.Publisher
+	store         keymanager.EntropyStore
+	pub           messaging.EventPublisher
 	apiBaseURL    string
 	httpClient    *http.Client
 	lowWatermark  int64
@@ -27,9 +27,9 @@ type Scheduler struct {
 }
 
 // NewScheduler creates a new entropy collector Scheduler.
-func NewScheduler(repo *keymanager.Repository, apiBaseURL string, pub *messaging.Publisher) *Scheduler {
+func NewScheduler(store keymanager.EntropyStore, apiBaseURL string, pub messaging.EventPublisher) *Scheduler {
 	return &Scheduler{
-		repo:          repo,
+		store:         store,
 		pub:           pub,
 		apiBaseURL:    apiBaseURL,
 		httpClient:    &http.Client{Timeout: 30 * time.Second},
@@ -80,7 +80,7 @@ func (s *Scheduler) run() {
 }
 
 func (s *Scheduler) collectEntropy() {
-	count, err := s.repo.CountAllUnusedEntropy()
+	count, err := s.store.CountAllUnusedEntropy()
 	if err != nil {
 		slog.Error("Failed to count entropy", "error", err)
 		return
@@ -165,7 +165,7 @@ func (s *Scheduler) fetchAndSave() bool {
 		Source:     "LFD",
 	}
 
-	if err := s.repo.SaveEntropy(quantumData); err != nil {
+	if err := s.store.SaveEntropy(quantumData); err != nil {
 		slog.Error("Failed to save entropy", "error", err)
 		return false
 	}
