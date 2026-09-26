@@ -14,4 +14,4 @@ branch anterior              -> feat/interfaces-abstraction            20260924
 
 branch atual                 -> feat/waitgroup-graceful-shutdown       20260925
 
-OBS: realizar merge da branch atual para branch main
+OBS: realizado merge da branch atual para branch main 20260926
