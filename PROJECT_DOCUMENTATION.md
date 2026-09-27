@@ -93,8 +93,8 @@ O pool é um conjunto de registros de 256 bytes de entropia quântica pura.
 | Parâmetro | Valor | Onde |
 |-----------|-------|------|
 | Tamanho de cada registro | 256 bytes | `collector/scheduler.go` |
-| Pool cheio (`highWatermark`) | 1000 registros (~256 KB) | `keymanager/service.go:25` e `collector/scheduler.go` |
-| Pool baixo (`lowWatermark`) | 200 registros | `keymanager/service.go:24` |
+| Pool cheio (`highWatermark`) | 1000 registros (~256 KB) | `collector/scheduler.go` |
+| Pool baixo (`lowWatermark`) | 200 registros | `keymanager/service.go` |
 | Consumo por geração de chave | 5 registros (1280 B) | `keymanager/service.go:22` |
 | Consumo por exportação | 2 registros | `keymanager/service.go:23` |
 | Tick do scheduler | 5 s | `collector/scheduler.go:66` |
@@ -281,18 +281,18 @@ pelo menos `n` (senão erro `"insufficient entropy in pool"`), marca `used=true`
 **`service.go`** (regras de negócio)
 ```go
 const (
-    entropyPerKey     = 5
-    entropyPerExport  = 2
-    poolLowThreshold  = 200
-    poolHighThreshold = 1000
+    entropyPerKey    = 5
+    entropyPerExport = 2
+    poolLowThreshold = 200
 )
 type Service struct {
-    repo      *Repository
-    masterKey []byte                 // AES-256 key (SHA-256 do MASTER_KEY_SECRET)
-    pub       *messaging.Publisher   // pode ser nil
-    OnPoolLow func()                 // callback setado no main: scheduler.TriggerRefill
+    store     EntropyStore             // persistência de entropia (interface)
+    keys      KeyStore                 // persistência de chaves (interface)
+    pub       messaging.EventPublisher // pode ser nil
+    masterKey []byte                   // AES-256 key (SHA-256 do MASTER_KEY_SECRET)
+    OnPoolLow func()                   // callback setado no main: scheduler.TriggerRefill
 }
-func NewService(repo, masterKeySecret string, pub) (*Service, error)
+func NewService(store EntropyStore, keys KeyStore, masterKeySecret string, pub messaging.EventPublisher) (*Service, error)
 func (s *Service) GenerateKey(alias string, keySize int) (*RsaKey, error)
 func (s *Service) ExportPrivateKey(id uint) ([]byte, error)
 func (s *Service) PoolStatus() (int64, error)
@@ -308,8 +308,26 @@ func (s *Service) DeleteAllKeys() error
    desse reader.
 5. Publica/privada → PEM (`MarshalPKIXPublicKey` / `MarshalPKCS1PrivateKey`).
 6. `aesGCMEncrypt(privPEM)` → `(ciphertext, nonce)` usando a chave mestra.
-7. `SaveKey` + publica `key.created` + `checkAndPublishPoolEvent()`.
-8. Se sobrou `< 200` → chama `s.OnPoolLow()` (dispara refill) e publica `entropy.pool.low`.
+7. `SaveKey` + publica `key.created` + `checkPoolStatus()`.
+8. Se sobrou `< 200` → chama `s.OnPoolLow()` (dispara refill local, **independente de RabbitMQ**) e publica `entropy.pool.low`.
+
+**Interfaces de domínio (`interfaces.go`):**
+```go
+// *Repository satisfaz ambas (asserções de compilação no arquivo).
+type EntropyStore interface {
+    SaveEntropy(q *QuantumData) error
+    ConsumeEntropy(n int) ([]QuantumData, error)
+    CountAllUnusedEntropy() (int64, error)
+    FindAllUnusedBySource(source string) ([]QuantumData, error)
+}
+type KeyStore interface {
+    SaveKey(k *RsaKey) error
+    FindAllKeys() ([]RsaKey, error)
+    FindKeyByID(id uint) (*RsaKey, error)
+    DeleteKeyByID(id uint) error
+    DeleteAllKeys() error
+}
+```
 
 **Helpers (privados):**
 ```go
@@ -343,13 +361,21 @@ func (c *Connection) DeclareDeadLetterExchange(dlxName string) error         // 
 
 Exchanges (todas `topic`):
 ```
-entropy.collected   → entropy.new / entropy.validated
+entropy.collected   → entropy.new / entropy.validated      (publisher: collector/scheduler.go)
 key.events          → key.created / key.exported / key.deleted
 audit.requests      → audit.start
 audit.results       → audit.complete
-entropy.pool        → entropy.pool.low / entropy.pool.ok
+entropy.pool        → entropy.pool.low  (publisher: keymanager/service.go, pós-consumo)
+                   → entropy.pool.ok    (publisher: collector/scheduler.go, fim do refill ≤ 1000)
 dlx.quantum         → (fanout, dead-letter)
 ```
+
+Eventos de pool — divisão de responsabilidade:
+- `entropy.pool.low`: publicado pelo **keymanager** quando uma operação de chave (gerar/exportar)
+  deixa o pool abaixo de 200. Também dispara o refill local via `OnPoolLow` (sem depender de RabbitMQ).
+- `entropy.pool.ok`: publicado pelo **scheduler** quando um refill atinge (ou passa) o high watermark
+  (1000). É a **única fonte** do "pool saudável" — antigamente o branch `pool.ok` no keymanager era
+  inalcançável (o pool nunca passa de 1000 e a checagem pós-consumo só olhava valores abaixo).
 
 Filas (durable, ligadas por binding):
 | Fila | Exchange | Routing Key |
@@ -377,11 +403,18 @@ Eventos (JSON):
 
 **`publisher.go`**
 ```go
+// Interface para consumidores (services/handlers dependem da abstração).
+type EventPublisher interface {
+    Publish(exchange, routingKey string, event interface{}) error
+}
+// var _ EventPublisher = (*Publisher)(nil)  // asserção de compilação
+
 func NewPublisher(conn *Connection) *Publisher
 func (p *Publisher) Publish(exchange, routingKey string, event interface{}) error
 ```
 JSON-marshal do evento + publica com `ContentType=application/json`,
-`DeliveryMode=amqp.Persistent`, timeout de 5 s via `context.WithTimeout`.
+`DeliveryMode=amqp.Persistent`, timeout de 5 s via `context.WithTimeout`
+(nota: `amqp091-go` ignora o contexto — o timeout é nominal).
 
 **`consumer.go`** — infraestrutura pronta, atualmente **sem consumidores em produção**:
 ```go
@@ -397,8 +430,8 @@ Ack manual: se o handler falhar → `msg.Nack(false, true)` (requeue); se ok →
 
 ```go
 type Scheduler struct {
-    repo          *keymanager.Repository
-    pub           *messaging.Publisher
+    store         keymanager.EntropyStore
+    pub           messaging.EventPublisher
     apiBaseURL    string
     httpClient    *http.Client          // timeout 30s
     lowWatermark  int64                 // 200
@@ -406,7 +439,7 @@ type Scheduler struct {
     stopChan      chan struct{}
     refillChan    chan struct{}         // capacidade 1 (coalesce sinais)
 }
-func NewScheduler(repo, apiBaseURL, pub) *Scheduler
+func NewScheduler(store keymanager.EntropyStore, apiBaseURL string, pub messaging.EventPublisher) *Scheduler
 func (s *Scheduler) TriggerRefill()     // envia sinal não-bloqueante para refillChan
 func (s *Scheduler) Start()             // go s.run()
 func (s *Scheduler) Stop()              // fecha stopChan
@@ -416,8 +449,11 @@ func (s *Scheduler) Stop()              // fecha stopChan
 - `collectEntropy()`: se `count < 200`, entra em loop de refill rápido: busca 1 lote
   (`fetchAndSave()` = 256 bytes `pure=true`), dorme 200 ms entre sucessos, 2 s em erro.
   Para ao atingir `count >= 1000` ou após `maxFailures = 10` erros consecutivos.
+- `publishPoolOk(count)`: quando o refill atinge o high watermark (`count >= 1000`),
+  publica `entropy.pool.ok` (exchange `entropy.pool`) — **única fonte** do evento
+  "pool saudável". Skipped se o refill desistiu cedo (`maxFailures`) ou foi interrompido.
 - `fetchAndSave()`: `GET {api}/api/v1/quantum-random?count=256&pure=true`, valida base64,
-  salva `QuantumData{Source:"LFD"}`, publica `entropy.new`. Retorna `bool` (sucesso/falha).
+  salva `QuantumData{Source:"LFD"}`, publica `entropy.new` + `entropy.validated`. Retorna `bool` (sucesso/falha).
 
 ### 5.5 `internal/audit` — auditoria
 
@@ -437,7 +473,7 @@ type AuditReport struct {
     SampleSize int            `json:"sampleSize"`
     Results    []AuditMetrics `json:"results"`
 }
-func NewService(repo *keymanager.Repository, pub *messaging.Publisher) *Service
+func NewService(store keymanager.EntropyStore, pub messaging.EventPublisher) *Service
 func (s *Service) RunFullAudit(requestedSize int) (*AuditReport, error)
 ```
 `RunFullAudit`: publica `audit.start`, amostra **Quantum (LFD)** do pool, gera amostras de
@@ -619,8 +655,13 @@ func (s *Service) RunSuites(suiteID string, requestedSize int, seed int64) (*Sui
 ### 5.8 `internal/ui` — frontend HTMX
 
 ```go
-type Handler struct { svc *keymanager.Service; repo *keymanager.Repository; auditSvc *audit.Service }
-func NewHandler(svc, repo, auditSvc) *Handler
+type Handler struct {
+    svc      *keymanager.Service
+    store    keymanager.EntropyStore     // CountAllUnusedEntropy (pool-status fragment)
+    keys     keymanager.KeyStore          // FindAllKeys (keys table fragment)
+    auditSvc *audit.Service
+}
+func NewHandler(svc *keymanager.Service, store keymanager.EntropyStore, keys keymanager.KeyStore, auditSvc *audit.Service) *Handler
 func (h *Handler) RegisterRoutes(r *gin.Engine)
 ```
 Rotas (todas retornam **fragmentos HTML**, não páginas completas):
@@ -646,16 +687,24 @@ coloridos `.verdict-pass|warn|fail`.
 
 ### 5.9 `cmd/` — entrypoints e env vars
 
-**`cmd/quantum-api/main.go`** — `PORT` (default `8081`), `LFD_API_URL` (default LfD). Graceful shutdown com `signal.Notify(SIGINT, SIGTERM)` + `srv.Shutdown(ctx, 10s)` + `select`.
+**`cmd/quantum-api/main.go`** — `PORT` (default `8081`), `LFD_API_URL` (default LfD). Graceful shutdown com `signal.Notify(SIGINT, SIGTERM)` + `srv.Shutdown(ctx, 10s)` + `sync.WaitGroup` (aguarda a goroutine do servidor terminar de fato).
 
 **`cmd/keymanager/main.go`** — ordem de inicialização:
 1. SQLite in-memory via GORM.
 2. `NewRepository` (AutoMigrate).
-3. RabbitMQ (`NewConnection` + `SetupExchangesAndQueues`) — se indisponível, **warn e segue**.
-4. `NewPublisher` → `NewScheduler` → `NewService`.
+3. RabbitMQ (`NewConnection` + `SetupExchangesAndQueues`) — se indisponível, **warn e segue** (pub fica `nil`).
+4. `var pub messaging.EventPublisher` (interface) → `NewScheduler` → `NewService` (`repo, repo, ...` — mesmo `*Repository` nas 2 interfaces).
 5. `svc.OnPoolLow = scheduler.TriggerRefill` (callback).
 6. `scheduler.Start()` (`defer scheduler.Stop()`).
-7. Handlers (keymanager, audit, ui) + rotas em `:8082`.
+7. Gin `gin.New()` + `gin.Logger()` + `middleware.Recovery()` (custom: defer/recover, stack via slog, JSON 500);
+   se `PANIC_DEBUG=true` registra canário `GET /debug/panic`.
+8. Handlers (keymanager, audit, ui) + rotas em `:8082`.
+
+**`internal/middleware/recovery.go`** — middleware custom de recovery:
+```go
+func Recovery() gin.HandlerFunc   // defer+recover → slog.Error(panic, path, stack) + JSON 500
+```
+Documenta o padrão `defer`/`recover` num contexto HTTP real (substitui o `gin.Recovery()` de `gin.Default()`).
 
 | Variável | Serviço | Default | Obrigatória |
 |----------|---------|---------|-------------|
@@ -843,19 +892,21 @@ Volumes: nenhum (SQLite in-memory).
 
 ```
 1. Pool fica baixo (<200) após gerar/exportar chaves
-2. svc.OnPoolLow() → scheduler.TriggerRefill() → refillChan (coalesce)
+2. svc.checkPoolStatus() → OnPoolLow() → scheduler.TriggerRefill() → refillChan (coalesce)
+   e publica entropy.pool.low (independente de RabbitMQ)
 3. Goroutine do scheduler recebe sinal → collectEntropy()
    → GET quantum-api:8081 /api/v1/quantum-random?count=256&pure=true  (lote de 256 B)
    → quantum-api busca LfD (qrng?length=256&format=HEX) → hex→bytes
-   → salva QuantumData{Source:"LFD"} → publica entropy.new → até 1000 registros
+   → salva QuantumData{Source:"LFD"} → publica entropy.new + entropy.validated → até 1000 registros
+   → ao atingir >= 1000 publica entropy.pool.ok (scheduler, única fonte de "pool saudável")
 4. Usuário gera chave (UI) → POST /ui/keys → svc.GenerateKey(alias, 2048)
    → ConsumeEntropy(5) (transação: SELECT ... LIMIT 5 + UPDATE used=true)
    → buildQuantumSeed → xorReader × crypto/rand → rsa.GenerateKey
    → PEM pública/privada → aesGCMEncrypt(privPEM) → SaveKey
-   → publica key.created → checkAndPublishPoolEvent()
+   → publica key.created → checkPoolStatus()
 5. Usuário exporta → POST /ui/keys/{id}/export → svc.ExportPrivateKey(id)
    → ConsumeEntropy(2) → aesGCMDecrypt → PEM → inline na UI (copy button)
-   → publica key.exported → checkAndPublishPoolEvent()
+   → publica key.exported → checkPoolStatus()
 ```
 
 ---
@@ -863,7 +914,7 @@ Volumes: nenhum (SQLite in-memory).
 ## 11. Testes
 
 ```bash
-go test ./...       # passa em todo o repo (sem testes em outros pacotes)
+go test ./...       # passa em todo o repo (validators + collector + keymanager)
 ```
 
 **`internal/audit/validators/validators_test.go`** é a suíte principal. Usa um **LCG**
@@ -894,6 +945,17 @@ próprio (`pseudoRandBytes`) + `allZeros` para gerar dados determinísticos.
 ```bash
 go test ./internal/audit/validators/ -run TestCumulativeSumsDistribution -v
 ```
+
+**`internal/keymanager/service_test.go`** — testes do fluxo de pool com fakes:
+- `TestCheckPoolStatusPublishesPoolLow` — pool abaixo do limiar publica `entropy.pool.low`.
+- `TestCheckPoolStatusTriggersRefillWithoutPublisher` — regressão do guard antigo: `OnPoolLow`
+  dispara mesmo quando o publisher é `nil` (RabbitMQ fora).
+- `TestCheckPoolStatusHealthyDoesNothing` — acima do limiar, nada é publicado nem acionado.
+
+**`internal/collector/scheduler_test.go`**:
+- `TestPublishPoolOk` — fim do refill publica `entropy.pool.ok` (exchange `entropy.pool`,
+  `CurrentCount` = 1000, `Threshold` = high watermark).
+- `TestPublishPoolOkNoPublisher` — sem publisher, `publishPoolOk` é no-op sem panic.
 
 ---
 

@@ -1,5 +1,5 @@
 # Progress Status — quantum-entropy-service-go
-> Atualizado: 2026-09-07
+> Atualizado: 2026-09-27
 
 ---
 
@@ -41,6 +41,10 @@ Reescrita em Go do `quantum-entropy-service` (Java/Spring Boot). Coleta entropia
 | `feat/entropy-lab-suites` | 4 suítes do Entropy Audit Lab (basic, min-entropy, nist, structure) + `/ui/lab` | ✅ Feito |
 | `fix/dockerfile-remove-go-mod-tidy` | Remove `RUN go mod tidy` do build Docker (falha DNS de deps de teste) | ✅ Feito |
 | `feat/audit-events-for-lab-suites` | Publica `audit.start`/`audit.complete` quando suites do Entropy Lab rodam | ✅ Feito |
+| `feat/waitgroup-graceful-shutdown` | Graceful shutdown no quantum-api com `sync.WaitGroup` | ✅ Feito |
+| `feat/interfaces-abstraction` | Injeção de `EntropyStore`/`KeyStore`/`EventPublisher` no lugar de tipos concretos | ✅ Feito |
+| `feat/panic-recover-middleware` | Recovery custom (`defer`/`recover`) + canário `/debug/panic` | ✅ Feito |
+| `fix/pool-ok-events-and-docs` | Corrige `pool.ok` (agora publicado pelo scheduler no fim do refill) + docs pos-interfaces | em andamento |
 
 ---
 
@@ -74,9 +78,11 @@ Reescrita em Go do `quantum-entropy-service` (Java/Spring Boot). Coleta entropia
 ## Hysteresis Event-Driven
 
 ```
-keymanager: após gerar ou exportar chave, verifica pool
-    pool < 200  → publica "entropy.pool.low"  → OnPoolLow() → scheduler.TriggerRefill()
-    pool >= 1000 → publica "entropy.pool.ok"  → quantum-api loga estado saudável
+keymanager: após gerar ou exportar chave (checkPoolStatus)
+    pool < 200 → OnPoolLow() → scheduler.TriggerRefill()  (refill local, sem depender de RabbitMQ)
+               → publica "entropy.pool.low"
+scheduler: ao fim do refill (collectEntropy)
+    pool >= 1000 → publica "entropy.pool.ok"  (única fonte do "pool saudável")
 ```
 
 ---
@@ -86,13 +92,14 @@ keymanager: após gerar ou exportar chave, verifica pool
 | Exchange | Routing Key | Evento | Publicado por |
 |----------|-------------|--------|---------------|
 | `entropy.collected` | `entropy.new` | `EntropyNewEvent` | `collector/scheduler.go` |
+| `entropy.collected` | `entropy.validated` | `EntropyValidatedEvent` | `collector/scheduler.go` |
 | `key.events` | `key.created` | `KeyCreatedEvent` | `keymanager/service.go` |
 | `key.events` | `key.exported` | `KeyExportedEvent` | `keymanager/service.go` |
 | `key.events` | `key.deleted` | `KeyDeletedEvent` | `keymanager/service.go` (via UI) |
 | `audit.requests` | `audit.start` | `AuditStartEvent` | `audit/service.go` + `audit/suites.go` |
 | `audit.results` | `audit.complete` | `AuditCompleteEvent` | `audit/service.go` + `audit/suites.go` |
-| `entropy.pool` | `entropy.pool.low` | `PoolLowEvent` | `keymanager/service.go` |
-| `entropy.pool` | `entropy.pool.ok` | `PoolOkEvent` | `keymanager/service.go` |
+| `entropy.pool` | `entropy.pool.low` | `PoolLowEvent` | `keymanager/service.go` (pós-consumo) |
+| `entropy.pool` | `entropy.pool.ok` | `PoolOkEvent` | `collector/scheduler.go` (fim do refill, pool ≥ 1000) |
 
 ---
 
@@ -144,6 +151,12 @@ keymanager: após gerar ou exportar chave, verifica pool
 - **Causa:** sinal errado no termo `sum2` (`p = 1 − sum1 − sum2`) e limites de `k` sem divisão por 4; divergência do `cusum.c` de referência do STS 2.1a
 - **Correção:** `p = 1 − sum1 + sum2`, bounds `(±n/z ± 1)/4` com divisão inteira truncada (C), e `zrev` próprio para a direção reversa
 - **Status:** ✅ Corrigido
+
+### `entropy.pool.ok` nunca aparecia no dashboard RabbitMQ
+- **Problema:** a fila `q.pool.ok` ficava sempre zerada enquanto as demais marcavam normalmente
+- **Causa:** o `pool.ok` era publicado pelo `checkAndPublishPoolEvent` do keymanager num branch **estruturemente inalcançável** — o pool nunca passa de 1000 (`highWatermark`) e a checagem roda **após** o consumo de entropia, então `count >= 1000` jamais era satisfeito
+- **Correção:** `pool.ok` passou a ser publicado pelo **scheduler** ao fim do refill, quando `count >= 1000`. `OnPoolLow` saiu do guard `pub == nil` (refill local agora funciona mesmo sem RabbitMQ)
+- **Status:** ✅ Corrigido (branch `fix/pool-ok-events-and-docs`)
 
 ---
 
