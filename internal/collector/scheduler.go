@@ -114,7 +114,31 @@ func (s *Scheduler) collectEntropy() {
 			slog.Warn("Stopped refill after consecutive failures",
 				"failures", maxFailures, "currentCount", count)
 		}
+
+		// Reaching (or exceeding) the high watermark means the pool is healthy
+		// again — publish pool.ok. Skipped when the refill gave up early or was
+		// interrupted, so we only announce a state we actually reached.
 		slog.Info("⛽ Entropy refilled", "currentCount", count)
+		if count >= s.highWatermark {
+			s.publishPoolOk(count)
+		}
+	}
+}
+
+// publishPoolOk publishes a pool.ok event when a refill reaches the high watermark.
+func (s *Scheduler) publishPoolOk(count int64) {
+	if s.pub == nil {
+		return
+	}
+	evt := messaging.PoolOkEvent{
+		CurrentCount: count,
+		Threshold:    s.highWatermark,
+		Timestamp:    time.Now(),
+	}
+	if err := s.pub.Publish(messaging.ExchangeEntropyPool, messaging.RoutingKeyPoolOk, evt); err != nil {
+		slog.Warn("Failed to publish pool.ok event", "error", err)
+	} else {
+		slog.Info("📈 Pool ok event published", "count", count)
 	}
 }
 

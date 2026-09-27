@@ -23,7 +23,7 @@ A microservices project rewritten in **Go** that fetches quantum random numbers 
 
 | Technology | Purpose |
 |------------|---------|
-| **Go 1.23** | Main language |
+| **Go 1.25** | Main language |
 | **Gin** | HTTP framework |
 | **GORM + SQLite** | ORM + In-memory database |
 | **RabbitMQ** | Event-driven messaging |
@@ -146,6 +146,8 @@ curl -s "http://localhost:8082/api/v1/quantum-entropy/audit?size=8192" | jq
 | `key.events` | `key.deleted` | Key deleted |
 | `audit.requests` | `audit.start` | Audit requested |
 | `audit.results` | `audit.complete` | Audit completed |
+| `entropy.pool` | `entropy.pool.low` | Pool below low watermark (200) — published by keymanager after key op |
+| `entropy.pool` | `entropy.pool.ok` | Pool reached high watermark (1000) — published by scheduler after refill |
 
 ## Project Structure
 

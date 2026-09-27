@@ -19,10 +19,9 @@ import (
 )
 
 const (
-	entropyPerKey     = 5 // QuantumData records consumed per RSA key generation
-	entropyPerExport  = 2 // QuantumData records consumed per key export
-	poolLowThreshold  = 200
-	poolHighThreshold = 1000
+	entropyPerKey    = 5 // QuantumData records consumed per RSA key generation
+	entropyPerExport = 2 // QuantumData records consumed per key export
+	poolLowThreshold = 200
 )
 
 // Service handles RSA key generation and AES-256-GCM key wrapping.
@@ -100,7 +99,7 @@ func (s *Service) GenerateKey(alias string, keySize int) (*RsaKey, error) {
 	slog.Info("RSA key generated", "id", key.ID, "alias", alias, "keySize", keySize)
 	s.publish(messaging.ExchangeKeyEvents, messaging.RoutingKeyKeyCreated,
 		messaging.KeyCreatedEvent{ID: key.ID, Alias: alias, KeySize: keySize, Timestamp: time.Now()})
-	s.checkAndPublishPoolEvent()
+	s.checkPoolStatus()
 	return key, nil
 }
 
@@ -128,7 +127,7 @@ func (s *Service) ExportPrivateKey(id uint) ([]byte, error) {
 	slog.Info("RSA key exported", "id", id, "alias", key.Alias)
 	s.publish(messaging.ExchangeKeyEvents, messaging.RoutingKeyKeyExported,
 		messaging.KeyExportedEvent{ID: id, Alias: key.Alias, Algorithm: "AES-256-GCM", Timestamp: time.Now()})
-	s.checkAndPublishPoolEvent()
+	s.checkPoolStatus()
 	return privPEM, nil
 }
 
@@ -184,34 +183,34 @@ func (s *Service) publish(exchange, routingKey string, event interface{}) {
 	}
 }
 
-// checkAndPublishPoolEvent checks current pool size and publishes pool.low or pool.ok accordingly.
-func (s *Service) checkAndPublishPoolEvent() {
-	if s.pub == nil {
-		return
-	}
+// checkPoolStatus checks the pool after consuming entropy. When the pool drops
+// below the low watermark it triggers a local refill (OnPoolLow) and publishes
+// pool.low. The pool.ok event is published by the collector scheduler once a
+// refill reaches the high watermark (single source of truth for "pool healthy").
+func (s *Service) checkPoolStatus() {
 	count, err := s.store.CountAllUnusedEntropy()
 	if err != nil {
 		slog.Warn("Failed to count entropy for pool event", "error", err)
 		return
 	}
-	now := time.Now()
-	if count < poolLowThreshold {
-		if s.OnPoolLow != nil {
-			s.OnPoolLow()
-		}
-		evt := messaging.PoolLowEvent{CurrentCount: count, Threshold: poolLowThreshold, Timestamp: now}
-		if err := s.pub.Publish(messaging.ExchangeEntropyPool, messaging.RoutingKeyPoolLow, evt); err != nil {
-			slog.Warn("Failed to publish pool.low event", "error", err)
-		} else {
-			slog.Info("📉 Pool low event published", "count", count)
-		}
-	} else if count >= poolHighThreshold {
-		evt := messaging.PoolOkEvent{CurrentCount: count, Threshold: poolHighThreshold, Timestamp: now}
-		if err := s.pub.Publish(messaging.ExchangeEntropyPool, messaging.RoutingKeyPoolOk, evt); err != nil {
-			slog.Warn("Failed to publish pool.ok event", "error", err)
-		} else {
-			slog.Info("📈 Pool ok event published", "count", count)
-		}
+	if count >= poolLowThreshold {
+		return
+	}
+
+	// Local refill trigger — independent of messaging so the pool recovers
+	// even when RabbitMQ is unavailable.
+	if s.OnPoolLow != nil {
+		s.OnPoolLow()
+	}
+
+	if s.pub == nil {
+		return
+	}
+	evt := messaging.PoolLowEvent{CurrentCount: count, Threshold: poolLowThreshold, Timestamp: time.Now()}
+	if err := s.pub.Publish(messaging.ExchangeEntropyPool, messaging.RoutingKeyPoolLow, evt); err != nil {
+		slog.Warn("Failed to publish pool.low event", "error", err)
+	} else {
+		slog.Info("📉 Pool low event published", "count", count)
 	}
 }
 

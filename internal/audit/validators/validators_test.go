@@ -25,9 +25,9 @@ func TestIgamcReferenceValues(t *testing.T) {
 	cases := []struct {
 		a, x, want float64
 	}{
-		{1, 1, math.Exp(-1)},       // Q(1,1) = e^-1
-		{2, 2, 3 * math.Exp(-2)},   // Q(2,2) = e^-2 (1+2)
-		{3, 2, 5 * math.Exp(-2)},   // Q(3,2) = e^-2 (1+2+2)
+		{1, 1, math.Exp(-1)},           // Q(1,1) = e^-1
+		{2, 2, 3 * math.Exp(-2)},       // Q(2,2) = e^-2 (1+2)
+		{3, 2, 5 * math.Exp(-2)},       // Q(3,2) = e^-2 (1+2+2)
 		{0.5, 0.5, 0.3173105078629141}, // Q(1/2,1/2) = erfc(sqrt(1/2))
 		{1, 0, 1},
 	}
@@ -232,7 +232,7 @@ func TestStructure(t *testing.T) {
 		t.Fatalf("all-zeros runs z should be +Inf, got %v", z)
 	}
 
-	rnd := pseudoRandBytes(1 << 16, 8)
+	rnd := pseudoRandBytes(1<<16, 8)
 	if z := StructureBitBias(rnd); z > 6 {
 		t.Fatalf("random bit bias |z|=%v too large", z)
 	}
