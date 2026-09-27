@@ -16,4 +16,4 @@ branch anterior              -> feat/waitgroup-graceful-shutdown       20260925
 
 branch atual                 -> fix/pool-ok-events-and-docs            20260927
 
-OBS: realizar merge da branch atual para branch main
+OBS: realizado merge da branch atual para branch main 20260927
