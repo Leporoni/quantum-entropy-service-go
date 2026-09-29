@@ -16,6 +16,8 @@ branch anterior              -> feat/waitgroup-graceful-shutdown       20260925
 
 branch anterior              -> fix/pool-ok-events-and-docs            20260927
 
-branch atual                 -> feat/audit-fan-in                      20260929
+branch anterior              -> feat/audit-fan-in                      20260929
+
+branch atual                 -> feat/scheduler-fanout-pool             20260929
 
 OBS: realizar merge da branch atual para branch main
