@@ -14,6 +14,8 @@ branch anterior              -> feat/interfaces-abstraction            20260924
 
 branch anterior              -> feat/waitgroup-graceful-shutdown       20260925
 
-branch atual                 -> fix/pool-ok-events-and-docs            20260927
+branch anterior              -> fix/pool-ok-events-and-docs            20260927
 
-OBS: realizado merge da branch atual para branch main 20260927
+branch atual                 -> feat/audit-fan-in                      20260929
+
+OBS: realizar merge da branch atual para branch main
