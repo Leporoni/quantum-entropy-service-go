@@ -3,6 +3,7 @@ package audit
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -13,6 +14,10 @@ import (
 	"github.com/leporoni/quantum-entropy-go-service/internal/keymanager"
 	"github.com/leporoni/quantum-entropy-go-service/internal/messaging"
 )
+
+// ErrNoQuantumData is returned when the entropy pool holds no unused quantum
+// data, so the audit never runs.
+var ErrNoQuantumData = errors.New("no quantum data in pool yet, wait for pool to fill")
 
 // AuditMetrics holds the results of an entropy audit for a single source.
 type AuditMetrics struct {
@@ -45,6 +50,15 @@ func NewService(store keymanager.EntropyStore, pub messaging.EventPublisher) *Se
 
 // RunFullAudit runs a multi-source entropy audit comparing quantum vs. PRNG sources.
 func (s *Service) RunFullAudit(requestedSize int) (*AuditReport, error) {
+	// The quantum sample is acquired before any publication: with an empty pool
+	// the audit never runs, so no audit.start/audit.complete event is emitted.
+	lfdSample, err := s.getQuantumSample("LFD", requestedSize)
+	if err != nil || len(lfdSample) == 0 {
+		slog.Warn("Audit skipped: no quantum data in pool", "requestedSize", requestedSize)
+		return nil, ErrNoQuantumData
+	}
+	realSampleSize := len(lfdSample)
+
 	slog.Info("Starting Dynamic Multi-Source Audit", "requestedSize", requestedSize)
 
 	if s.pub != nil {
@@ -57,21 +71,12 @@ func (s *Service) RunFullAudit(requestedSize int) (*AuditReport, error) {
 		}
 	}
 
-	var results []AuditMetrics
-	realSampleSize := 0
-
 	// 1. Audit LFD Quantum Source
-	lfdSample, err := s.getQuantumSample("LFD", requestedSize)
-	if err == nil && len(lfdSample) > 0 {
-		realSampleSize = len(lfdSample)
-		results = append(results, auditSource("Quantum (LFD)", lfdSample))
-	}
+	results := []AuditMetrics{auditSource("Quantum (LFD)", lfdSample)}
 
 	// 2. Audit Local PRNGs (using the same sample size for fair comparison)
-	if realSampleSize > 0 {
-		results = append(results, auditSource("Java SecureRandom (CSPRNG)", getCsprngSample(realSampleSize)))
-		results = append(results, auditSource("Java Random (LCRNG)", getPrngSample(realSampleSize, DefaultPRNGSeed)))
-	}
+	results = append(results, auditSource("Java SecureRandom (CSPRNG)", getCsprngSample(realSampleSize)))
+	results = append(results, auditSource("Java Random (LCRNG)", getPrngSample(realSampleSize, DefaultPRNGSeed)))
 
 	report := &AuditReport{
 		SampleSize: realSampleSize,

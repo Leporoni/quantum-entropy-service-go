@@ -115,6 +115,15 @@ func (s *Service) RunSuites(suiteID string, requestedSize int, seed int64) (*Sui
 		seed = DefaultPRNGSeed
 	}
 
+	// The quantum sample is acquired before any publication: with an empty pool
+	// the suite never runs, so no audit.start/audit.complete event is emitted.
+	queueSample, err := s.getQuantumSample("LFD", requestedSize)
+	if err != nil || len(queueSample) == 0 {
+		slog.Warn("Lab suite skipped: no quantum data in pool", "suite", suiteID, "requestedSize", requestedSize)
+		return nil, ErrNoQuantumData
+	}
+	realSampleSize := len(queueSample)
+
 	slog.Info("Starting Entropy Lab Suite", "suite", suiteID, "requestedSize", requestedSize, "seed", seed)
 
 	if s.pub != nil {
@@ -127,24 +136,16 @@ func (s *Service) RunSuites(suiteID string, requestedSize int, seed int64) (*Sui
 		}
 	}
 
-	var results []SourceResult
-	realSampleSize := 0
-
-	queueSample, err := s.getQuantumSample("LFD", requestedSize)
-	if err == nil && len(queueSample) > 0 {
-		realSampleSize = len(queueSample)
-		results = append(results, SourceResult{Source: "Quantum (LFD)", Metrics: def.run(queueSample)})
-	}
-
-	if realSampleSize > 0 {
-		results = append(results, SourceResult{
+	results := []SourceResult{
+		{Source: "Quantum (LFD)", Metrics: def.run(queueSample)},
+		{
 			Source:  "Java SecureRandom (CSPRNG)",
 			Metrics: def.run(getCsprngSample(realSampleSize)),
-		})
-		results = append(results, SourceResult{
+		},
+		{
 			Source:  "Java Random (LCRNG)",
 			Metrics: def.run(getPrngSample(realSampleSize, seed)),
-		})
+		},
 	}
 
 	result := &SuiteResult{

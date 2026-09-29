@@ -14,6 +14,12 @@ services:
     depends_on:
       rabbitmq:
         condition: service_healthy
+    # Host is WSL2: /etc/resolv.conf points at 10.255.255.254, which the
+    # container's NAT cannot reach, so Docker's embedded resolver (127.0.0.11)
+    # fails with "lookup lfdr.de: no such host". Pin public resolvers.
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     networks:
       - quantum-net
     restart: unless-stopped

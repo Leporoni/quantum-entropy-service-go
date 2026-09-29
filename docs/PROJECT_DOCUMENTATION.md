@@ -401,6 +401,10 @@ Eventos (JSON):
 - `PoolLowEvent{currentCount, threshold, timestamp}`
 - `PoolOkEvent{currentCount, threshold, timestamp}`
 
+> `audit.start` / `audit.complete` só são publicados quando existe dado quântico no pool.
+> Com o pool vazio, `RunFullAudit` e `RunSuites` retornam `audit.ErrNoQuantumData` **antes**
+> de qualquer `Publish` — abrir `/ui/audit` ou `/ui/lab` não gera mais eventos fantasma.
+
 **`publisher.go`**
 ```go
 // Interface para consumidores (services/handlers dependem da abstração).
@@ -476,9 +480,11 @@ type AuditReport struct {
 func NewService(store keymanager.EntropyStore, pub messaging.EventPublisher) *Service
 func (s *Service) RunFullAudit(requestedSize int) (*AuditReport, error)
 ```
-`RunFullAudit`: publica `audit.start`, amostra **Quantum (LFD)** do pool, gera amostras de
-**CSPRNG** (`crypto/rand`) e **PRNG** (`math/rand` seed `12345`) do mesmo tamanho, e roda as
-5 métricas para cada fonte.
+`RunFullAudit`: amostra **Quantum (LFD)** do pool **primeiro** e, só depois, publica
+`audit.start`; gera amostras de **CSPRNG** (`crypto/rand`) e **PRNG** (`math/rand` seed
+`12345`) do mesmo tamanho, roda as 5 métricas para cada fonte e publica `audit.complete`.
+Se o pool estiver vazio, retorna `ErrNoQuantumData` e **não publica nenhum evento** — evita
+eventos fantasma quando a UI abre `/ui/audit` antes do pool encher.
 
 **`handler.go`** — `GET /api/v1/quantum-entropy/audit?size=8192` (JSON `AuditReport`).
 
@@ -640,13 +646,14 @@ func (s *Service) RunSuites(suiteID string, requestedSize int, seed int64) (*Sui
 ```
 1. Busca a `suiteDef` no registry; inexistente → `ErrUnknownSuite`.
 2. `seed == 0` → `DefaultPRNGSeed`.
-3. Amostra **Quantum (LFD)** do pool (`getQuantumSample("LFD", size)`). Se não houver dados →
-   resultado vazio (UI mostra mensagem).
-4. Se a amostra quântica existe, roda a suíte nas **3 fontes** com o mesmo tamanho real:
+3. Amostra **Quantum (LFD)** do pool (`getQuantumSample("LFD", size)`) **antes** de qualquer
+   publicação. Sem dados → retorna `ErrNoQuantumData` e **não publica nenhum evento**.
+4. Só então publica `audit.start` e roda a suíte nas **3 fontes** com o mesmo tamanho real:
    - `Quantum (LFD)` — bytes reais do pool.
    - `Java SecureRandom (CSPRNG)` — `crypto/rand`.
    - `Java Random (LCRNG)` — `math/rand` semeado.
-5. `Indicative = realSampleSize < def.minBytes` → a UI exibe banner "indicative".
+5. Monta o `SuiteResult` (`Indicative = realSampleSize < def.minBytes` → a UI exibe banner
+   "indicative") e publica `audit.complete`.
 
 > **Por que "Java ..." nos rótulos da fonte?** O projeto original é um port de um sistema
 > Java, cuja auditoria comparava o gerador quântico com `SecureRandom` e `Random` do Java.
@@ -774,7 +781,7 @@ Exemplos no projeto:
 ```go
 // 1) Declaração + inferência de tipo (a forma mais comum):
 db, err := gorm.Open(...)          // cmd/keymanager/main.go — tipo inferido de gorm.Open
-r := mrand.New(mrand.NewSource(seed)) // audit/service.go:149
+r := mrand.New(mrand.NewSource(seed)) // audit/service.go:153
 resp, err := c.httpClient.Get(url)    // quantum/client_lfd.go:44
 
 // 2) Com erro em multi-retorno — o erro é espalhado na mesma linha:
@@ -976,7 +983,7 @@ go test ./internal/audit/validators/ -run TestCumulativeSumsDistribution -v
 ## 13. Itens Futuros / TODOs
 
 - **Consumidores RabbitMQ** — topologia pronta, mas nenhum consumer processa as filas ainda.
-- `internal/audit/service.go:118` — `TODO: Fetch actual quantum data from repository`
+- `internal/audit/service.go:123` — `TODO: Fetch actual quantum data from repository`
   (hoje `getQuantumSample` itera `FindAllUnusedBySource`; evoluir para query eficiente por tamanho).
 - `internal/collector/scheduler.go:159` — `TODO: Add NIST SP 800-90B entropy validation here`.
 - Persistent storage (S3/arquivo) se houver requisito de sobrevivência de pool.

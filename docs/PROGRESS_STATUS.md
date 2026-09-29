@@ -99,8 +99,8 @@ scheduler: ao fim do refill (collectEntropy)
 | `key.events` | `key.created` | `KeyCreatedEvent` | `keymanager/service.go` |
 | `key.events` | `key.exported` | `KeyExportedEvent` | `keymanager/service.go` |
 | `key.events` | `key.deleted` | `KeyDeletedEvent` | `keymanager/service.go` (via UI) |
-| `audit.requests` | `audit.start` | `AuditStartEvent` | `audit/service.go` + `audit/suites.go` |
-| `audit.results` | `audit.complete` | `AuditCompleteEvent` | `audit/service.go` + `audit/suites.go` |
+| `audit.requests` | `audit.start` | `AuditStartEvent` | `audit/service.go` + `audit/suites.go` (só se o pool tiver dado) |
+| `audit.results` | `audit.complete` | `AuditCompleteEvent` | `audit/service.go` + `audit/suites.go` (só se o pool tiver dado) |
 | `entropy.pool` | `entropy.pool.low` | `PoolLowEvent` | `keymanager/service.go` (pós-consumo) |
 | `entropy.pool` | `entropy.pool.ok` | `PoolOkEvent` | `collector/scheduler.go` (fim do refill, pool ≥ 1000) |
 
@@ -203,6 +203,24 @@ Consulta determinística (PRNG com seed fixo) e descritivo dos 4 testes no front
 
 ---
 
+## Auditoria com Pool Vazio — Sem Eventos Fantasma
+
+- **Problema:** `RunFullAudit` publicava `audit.start` **antes** de olhar o pool, e `audit.complete`
+  era publicado mesmo com `results == nil`. Bastava abrir `/ui/audit` ou `/ui/lab` no navegador
+  (fragmento htmx, polling) para gerar os dois eventos com o pool ainda vazio.
+- **Fix:** as duas funções adquirem a amostra `Quantum (LFD)` **antes** de qualquer `Publish`.
+  Pool vazio → `slog.Warn` + retorno de `audit.ErrNoQuantumData`, **zero eventos** publicados.
+- **Ordem preservada em `RunSuites`:** a resolução da `suiteDef` continua antes da checagem de pool,
+  então `ErrUnknownSuite` não é mascarado por `ErrNoQuantumData`.
+- **UX:** `ui/handler.go` trata `errors.Is(err, audit.ErrNoQuantumData)` e mantém a mensagem
+  amigável "No quantum data in pool yet. Wait for pool to fill.".
+- **Cobertura:** `internal/audit/service_test.go` (fake publisher que conta publicações por
+  routing key): 3 testes de pool vazio/suite inválida e 2 de pool cheio (1 `audit.start` +
+  1 `audit.complete`).
+- **Status:** ✅ Corrigido
+
+---
+
 ## Docker Build — Correção de Falha
 
 - **Problema:** `RUN go mod tidy` no build falhava com `lookup proxy.golang.org: no such host`
@@ -212,9 +230,27 @@ Consulta determinística (PRNG com seed fixo) e descritivo dos 4 testes no front
 
 ---
 
+## Docker Runtime — DNS do Container (WSL2)
+
+- **Problema:** `GET /api/v1/quantum-random?count=1024&pure=true` retornava 500 em ~0,030 s com
+  `dial tcp: lookup lfdr.de on 127.0.0.11:53: no such host`. Não tinha relação com o fan-out do
+  scheduler: o pool nunca enchia, antes ou depois dele.
+- **Causa:** o host é **WSL2**, cujo `/etc/resolv.conf` aponta para `10.255.255.254` — endereço
+  inalcançável a partir do NAT do container. O resolver embutido do Docker (`127.0.0.11`) forwarda
+  para esse nameserver e falha. O `network: host` do `docker-compose.yml` está dentro de `build:`,
+  então vale só para o build, **não** em runtime.
+- **Fix:** pin de resolvers públicos em `quantum-api` (`dns: [8.8.8.8, 1.1.1.1]`). Aplicado apenas
+  nesse serviço: o `keymanager` resolve `quantum-api` pelo DNS embutido do Docker e não precisa de
+  DNS externo.
+- **Diagnóstico:** a própria LfD está saudável (200 para 256 B e 1024 B, single e 4× concorrente) —
+  o erro é puramente de resolução de nome dentro do container.
+- **Status:** ✅ Corrigido
+
+---
+
 ## TODOs Pendentes
 
-- `internal/audit/service.go:118` — `TODO: Fetch actual quantum data from repository`
+- `internal/audit/service.go:123` — `TODO: Fetch actual quantum data from repository`
 - `internal/collector/scheduler.go:241` — `TODO: Add NIST SP 800-90B entropy validation here`
 
 ---
