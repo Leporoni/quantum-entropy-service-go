@@ -18,6 +18,8 @@ branch anterior              -> fix/pool-ok-events-and-docs            20260927
 
 branch anterior              -> feat/audit-fan-in                      20260929
 
-branch atual                 -> feat/scheduler-fanout-pool             20260929
+branch anterior              -> feat/scheduler-fanout-pool             20260929
+
+branch atual                 -> feat/sync-primitives-mutex-once        20260929
 
 OBS: realizar merge da branch atual para branch main
