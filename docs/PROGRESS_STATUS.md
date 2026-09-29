@@ -45,6 +45,7 @@ Reescrita em Go do `quantum-entropy-service` (Java/Spring Boot). Coleta entropia
 | `feat/interfaces-abstraction` | Injeção de `EntropyStore`/`KeyStore`/`EventPublisher` no lugar de tipos concretos | ✅ Feito |
 | `feat/panic-recover-middleware` | Recovery custom (`defer`/`recover`) + canário `/debug/panic` | ✅ Feito |
 | `fix/pool-ok-events-and-docs` | Corrige `pool.ok` (agora publicado pelo scheduler no fim do refill) + docs pos-interfaces | em andamento |
+| `feat/scheduler-fanout-pool` | Refill do scheduler com **fan-out** (worker pool: canais + `sync.WaitGroup` + `atomic.Int64`), split do chunk e semáforo na LfD | ✅ Feito |
 
 ---
 
@@ -52,15 +53,17 @@ Reescrita em Go do `quantum-entropy-service` (Java/Spring Boot). Coleta entropia
 
 ```
 [LfD Quantum API] ──HTTP──► quantum-api (:8081)
-  GET /qrng?length=256&format=HEX
-                                   │ scheduler (goroutine)
-                                   │ coleta quando pool < 200
-                                   │ para quando pool >= 1000
-                                   │
-                                   │ POST /api/v1/quantum-random
-                                   ▼
-                            keymanager (:8082)
-                             salva no SQLite (in-memory)
+  GET /qrng?length=1024&format=HEX
+                                    │ scheduler (goroutine)
+                                    │ coleta quando pool < 200
+                                    │ para quando pool >= 1000
+                                    │
+                                    │ GET /api/v1/quantum-random?count=1024&pure=true
+                                    ▼
+                             keymanager (:8082)
+                        split 1024 B → 4 registros de 256 B
+                        fan-out: 4 workers, 1 writer no SQLite
+                              salva no SQLite (in-memory)
                                    │
                      ┌─────────────┴─────────────┐
                      ▼                           ▼
@@ -112,12 +115,32 @@ scheduler: ao fim do refill (collectEntropy)
 | `internal/messaging/` | ✅ | Topologia RabbitMQ completa |
 | `internal/audit/` | ✅ | Shannon, Chi-Square, Monte Carlo + publicação de eventos + lab suites (`suites.go`, `validators/`) |
 | `internal/audit/validators/` | ✅ | `igamc`, min-entropy (MCV+bits), NIST 800-22 subset, structure |
-| `internal/collector/` | ✅ | Scheduler com hysteresis + TriggerRefill + publicação de eventos |
+| `internal/collector/` | ✅ | Scheduler com hysteresis + TriggerRefill + publicação de eventos + refill fan-out (4 workers, split 1024→4×256 B) |
 | `internal/ui/` | ✅ | Fragmentos HTMX + delete via Service + modal export fix + rota `/ui/lab` |
 | `cmd/quantum-api/main.go` | ✅ | Entrypoint serviço 1 |
 | `cmd/keymanager/main.go` | ✅ | Entrypoint serviço 2 + OnPoolLow wired |
 | `web/static/` | ✅ | Frontend cyberpunk |
 | Docker + Compose | ✅ | Containers configurados |
+
+---
+
+## Refill do Scheduler — Fan-Out (worker pool)
+
+Branch `feat/scheduler-fanout-pool`. O refill deixou de ser um fetch sequencial de 256 B com `time.Sleep(200ms)`.
+
+**Split do chunk** — cada fetch pede o máximo do endpoint (`count=1024`, `== quantum.MaxCount`) e `saveRecords` fatia em registros de 256 B (`entropyChunkBytes/entropyRecordBytes = 4`). O tamanho do registro **não** mudou de propósito: as watermarks (200/1000) e o consumo por chave contam **registros**, não bytes — trocar para 1024 B por registro inflaria o pool 4× e quebraria a semântica do hysteresis.
+
+**Fan-out / fan-in** (`runRefillBatch`, `internal/collector/scheduler.go:146-204`):
+- 4 workers (`refillWorkers`) leem de um canal `jobs` **não-bufferizado** — cada job sai uma única vez, e o produtor aborta cedo via `select` no `stopChan`
+- Produtor cede assim que `failCount.Load() >= maxFailures` (`atomic.Int64`, decisão compartilhada com os workers)
+- Goroutine "closer" separada: `wg.Wait()` → `close(results)` (evita `send on closed channel`)
+- **Single-writer:** só o coletor chama `SaveEntropy`. O SQLite in-memory rejeita escritores concorrentes — saves paralelos dariam `database is locked`
+
+**Semáforo na LfD** (`internal/quantum/client_lfd.go:20,47-48`): `sem chan struct{}` com `maxConcurrentLfd = 4` limita os requests simultâneos ao dispositivo físico — teto global, não só do scheduler.
+
+- **Problema:** refill sequencial, 1 request de 256 B por vez com `time.Sleep(200ms)` hardcoded
+- **Correção:** 4 fetches concorrentes de 1024 B, split em 4 registros cada, backoff configurável (`retryDelay`, default 1 s) e `maxFailures = 10` como teto de erro
+- **Status:** ✅ Corrigido (branch `feat/scheduler-fanout-pool`)
 
 ---
 
@@ -192,7 +215,7 @@ Consulta determinística (PRNG com seed fixo) e descritivo dos 4 testes no front
 ## TODOs Pendentes
 
 - `internal/audit/service.go:118` — `TODO: Fetch actual quantum data from repository`
-- `internal/collector/scheduler.go:159` — `TODO: Add NIST SP 800-90B entropy validation here`
+- `internal/collector/scheduler.go:241` — `TODO: Add NIST SP 800-90B entropy validation here`
 
 ---
 
