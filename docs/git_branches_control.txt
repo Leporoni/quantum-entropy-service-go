@@ -22,4 +22,4 @@ branch anterior              -> feat/scheduler-fanout-pool             20260929
 
 branch atual                 -> feat/sync-primitives-mutex-once        20260929
 
-OBS: realizar merge da branch atual para branch main
+OBS: realizado merge da branch atual para branch main 20260929
