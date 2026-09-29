@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/leporoni/quantum-entropy-go-service/internal/messaging"
@@ -26,10 +27,24 @@ const (
 
 // Service handles RSA key generation and AES-256-GCM key wrapping.
 type Service struct {
-	store     EntropyStore
-	keys      KeyStore
-	masterKey []byte // 32-byte AES-256 master key derived from MASTER_KEY_SECRET
-	pub       messaging.EventPublisher
+	store EntropyStore
+	keys  KeyStore
+	pub   messaging.EventPublisher
+
+	// The master key is derived once: SHA-256 of the secret, reused for every
+	// encrypt/decrypt call. Before this it was re-hashed on every call.
+	//
+	// sync.Once is the right tool here and nowhere else in this codebase. The
+	// derivation is a pure function of an immutable secret, so it cannot fail
+	// transiently and there is nothing to retry. The messaging connection is the
+	// opposite case — dial and declareTopology both fail transiently, and both the
+	// session and the channel can be replaced underneath us — which is why it uses
+	// a bool under a mutex. The rejected Once and why it was rejected is written
+	// up in docs/PROGRESS_STATUS.md.
+	masterSecret string
+	keyOnce      sync.Once
+	key          []byte // 32-byte AES-256 master key derived from MASTER_KEY_SECRET
+
 	// OnPoolLow, when set, is invoked whenever the pool drops below the low watermark.
 	// Used by the entrypoint to trigger an immediate scheduler refill (no consumer loop).
 	OnPoolLow func()
@@ -42,8 +57,25 @@ func NewService(store EntropyStore, keys KeyStore, masterKeySecret string, pub m
 	if masterKeySecret == "" {
 		return nil, errors.New("MASTER_KEY_SECRET must not be empty")
 	}
-	hash := sha256.Sum256([]byte(masterKeySecret))
-	return &Service{store: store, keys: keys, masterKey: hash[:], pub: pub}, nil
+	return &Service{store: store, keys: keys, masterSecret: masterKeySecret, pub: pub}, nil
+}
+
+// masterKey returns the 32-byte AES-256 key derived from MASTER_KEY_SECRET,
+// hashing the secret on first use and reusing the result afterwards.
+//
+// The derivation is deliberately lazy, and not for the reason it is usually given.
+// "Hashing 32 bytes is cheaper than a service that never encrypts" is not a real
+// trade-off: SHA-256 over 32 bytes is on the order of 100 ns, once per process,
+// against an RSA key generation that takes hundreds of milliseconds. The actual
+// reason is that NewService validating the secret is the single gate on it, and
+// deriving eagerly means the key material exists in the struct before anything has
+// asked for it. Pinned by TestNewServiceDoesNotDeriveTheKeyEagerly.
+func (s *Service) masterKey() []byte {
+	s.keyOnce.Do(func() {
+		hash := sha256.Sum256([]byte(s.masterSecret))
+		s.key = hash[:]
+	})
+	return s.key
 }
 
 // GenerateKey creates a new RSA key pair using quantum entropy as the seed source.
@@ -217,7 +249,7 @@ func (s *Service) checkPoolStatus() {
 // --- AES-256-GCM helpers ---
 
 func (s *Service) aesGCMEncrypt(plaintext []byte) (ciphertext, nonce []byte, err error) {
-	block, err := aes.NewCipher(s.masterKey)
+	block, err := aes.NewCipher(s.masterKey())
 	if err != nil {
 		return nil, nil, err
 	}
@@ -234,7 +266,7 @@ func (s *Service) aesGCMEncrypt(plaintext []byte) (ciphertext, nonce []byte, err
 }
 
 func (s *Service) aesGCMDecrypt(ciphertext, nonce []byte) ([]byte, error) {
-	block, err := aes.NewCipher(s.masterKey)
+	block, err := aes.NewCipher(s.masterKey())
 	if err != nil {
 		return nil, err
 	}
@@ -260,7 +292,13 @@ func buildQuantumSeed(records []QuantumData) []byte {
 }
 
 // xorReader is an io.Reader that XORs quantum seed bytes with crypto/rand output.
+//
+// There is no race today: the reader is built per call in GenerateKey and consumed
+// by a single goroutine. The lock exists to harden the primitive itself — CIRCL will
+// reuse this same reader as the seed source for ML-KEM/ML-DSA, whose generation may
+// consume it from several goroutines at once (docs/CIRCL_INTEGRATION_PLAN.md:95,163).
 type xorReader struct {
+	mu     sync.Mutex
 	seed   []byte
 	offset int
 }
@@ -274,11 +312,18 @@ func (x *xorReader) Read(p []byte) (int, error) {
 	if err != nil {
 		return n, err
 	}
-	for i := 0; i < n; i++ {
-		if len(x.seed) > 0 {
-			p[i] ^= x.seed[x.offset%len(x.seed)]
-			x.offset++
-		}
+	if len(x.seed) == 0 {
+		return n, nil
 	}
+
+	// The lock covers only the XOR loop: rand.Reader.Read stays outside it, so the
+	// CSPRNG call — the expensive part — still runs fully parallel.
+	x.mu.Lock()
+	for i := 0; i < n; i++ {
+		p[i] ^= x.seed[x.offset%len(x.seed)]
+		x.offset++
+	}
+	x.mu.Unlock()
+
 	return n, nil
 }

@@ -2,8 +2,6 @@ package messaging
 
 import (
 	"log/slog"
-
-	amqp "github.com/rabbitmq/amqp091-go"
 )
 
 // MessageHandler is a function that processes a single message.
@@ -23,7 +21,12 @@ func NewConsumer(conn *Connection) *Consumer {
 // Messages are processed by the provided handler function.
 // If processing fails, the message is nacked and requeued.
 func (c *Consumer) Consume(queueName string, handler MessageHandler) error {
-	msgs, err := c.conn.Channel().Consume(
+	ch, err := c.conn.Channel()
+	if err != nil {
+		return err
+	}
+
+	msgs, err := ch.Consume(
 		queueName, // queue
 		"",        // consumer tag (auto-generated)
 		false,     // auto-ack (manual for reliability)
@@ -54,15 +57,39 @@ func (c *Consumer) Consume(queueName string, handler MessageHandler) error {
 }
 
 // ConsumeWithPrefetch starts consuming with a prefetch limit for backpressure control.
+//
+// Known wart, left alone on purpose: this calls c.conn.Channel() for the Qos call
+// and Consume() calls it again for the consume call. Both are cheap after the first
+// (the session is up and the topology is declared), so the duplicate is not a bug —
+// but it is redundant, and collapsing it would change a public signature or invent a
+// channel-accepting variant that nothing calls. PENDING: no production caller uses
+// this method at all, so it is not worth an API change until there is one.
 func (c *Consumer) ConsumeWithPrefetch(queueName string, prefetch int, handler MessageHandler) error {
-	if err := c.conn.Channel().Qos(prefetch, 0, false); err != nil {
+	ch, err := c.conn.Channel()
+	if err != nil {
+		return err
+	}
+	if err := ch.Qos(prefetch, 0, false); err != nil {
 		return err
 	}
 	return c.Consume(queueName, handler)
 }
 
-// SetupExchangesAndQueues declares all exchanges and queues needed by the system.
-func SetupExchangesAndQueues(conn *Connection) error {
+// declareTopology declares all exchanges and queues needed by the system. It is a
+// method so the declaration runs on the connection's own channel, under the same
+// mutex Channel() holds.
+//
+// It is not memoised by a sync.Once: Channel() sets Connection.topologyDeclared
+// only after this returns nil, so a failure here leaves the topology undeclared
+// and the next call retries. A redial or a channel reopen resets that flag, so a
+// new channel gets its own declaration — which is precisely what a Once gets wrong
+// (see docs/PROGRESS_STATUS.md).
+//
+// Coverage: 0%. Every call in here is an AMQP round trip and *amqp.Channel is a
+// concrete type with no seam behind it, so a test cannot reach this function at
+// all. The amqpChannel interface that would fix it is on the backlog, deliberately
+// not built.
+func (c *Connection) declareTopology() error {
 	// Declare exchanges
 	exchanges := []string{
 		ExchangeEntropyCollected,
@@ -72,13 +99,13 @@ func SetupExchangesAndQueues(conn *Connection) error {
 		ExchangeEntropyPool,
 	}
 	for _, ex := range exchanges {
-		if err := conn.DeclareExchange(ex); err != nil {
+		if err := c.DeclareExchange(ex); err != nil {
 			return err
 		}
 	}
 
 	// Declare Dead Letter Exchange
-	if err := conn.DeclareDeadLetterExchange("dlx.quantum"); err != nil {
+	if err := c.DeclareDeadLetterExchange("dlx.quantum"); err != nil {
 		return err
 	}
 
@@ -98,7 +125,7 @@ func SetupExchangesAndQueues(conn *Connection) error {
 	}
 
 	for _, q := range queues {
-		if _, err := conn.DeclareQueue(q.name, q.exchange, q.routingKey); err != nil {
+		if _, err := c.DeclareQueue(q.name, q.exchange, q.routingKey); err != nil {
 			return err
 		}
 	}
@@ -106,6 +133,3 @@ func SetupExchangesAndQueues(conn *Connection) error {
 	slog.Info("✅ All exchanges and queues declared")
 	return nil
 }
-
-// Ensure amqp import is used
-var _ amqp.Delivery

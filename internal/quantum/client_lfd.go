@@ -15,10 +15,15 @@ type LfdApiResponse struct {
 	Qrn string `json:"qrn"` // Hex-encoded quantum random numbers
 }
 
+// maxConcurrentLfd caps simultaneous requests to the LfD device, the real
+// bottleneck behind the quantum-random endpoint.
+const maxConcurrentLfd = 4
+
 // LfdClient is an HTTP client for the LfD quantum random API.
 type LfdClient struct {
 	baseURL    string
 	httpClient *http.Client
+	sem        chan struct{} // caps concurrent in-flight requests to the LfD
 }
 
 // NewLfdClient creates a new LfD API client.
@@ -32,12 +37,16 @@ func NewLfdClient(baseURL string) *LfdClient {
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
+		sem: make(chan struct{}, maxConcurrentLfd),
 	}
 }
 
 // FetchRandomBytes fetches quantum random bytes from the LfD API.
 // The API returns hex-encoded data which is decoded to raw bytes.
 func (c *LfdClient) FetchRandomBytes(count int) ([]byte, error) {
+	c.sem <- struct{}{}
+	defer func() { <-c.sem }()
+
 	url := fmt.Sprintf("%s/qrng?length=%d&format=HEX", c.baseURL, count)
 	slog.Debug("Fetching from LfD API", "url", url)
 

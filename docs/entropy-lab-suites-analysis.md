@@ -28,7 +28,9 @@ exatamente **quais testes avançados são necessários e como apresentá-los no 
   - Quantum LFD (via pool / `FindAllUnusedBySource`)
   - Java SecureRandom (CSPRNG) — `crypto/rand`
   - Java Random (LCRNG) — `math/rand`
-  - Também publica `audit.start` / `audit.complete` via RabbitMQ.
+  - Também publica `audit.start` / `audit.complete` via RabbitMQ — **apenas depois** de
+    obter a amostra quântica. Com o pool vazio retorna `ErrNoQuantumData` e publica nada
+    (evita eventos fantasma quando a aba Entropy Lab é aberta antes do pool encher).
 - **`internal/collector/scheduler.go`** — `NewScheduler(repo, apiBaseURL, pub)`: coleta
   entropia do Quantum API e **publica `entropy.new`** a cada coleta.
 - **`internal/audit/validators/validators.go`** — 5 métricas por fonte:
@@ -42,7 +44,7 @@ exatamente **quais testes avançados são necessários e como apresentá-los no 
 - **`internal/audit/handler.go`** — `GET /api/v1/quantum-entropy/audit?size=8192` (JSON).
 
 ### 2.2 UI (HTMX)
-- **`internal/ui/handler.go:193`** — `runAudit`: gera fragmento HTML com o seletor
+- **`internal/ui/handler.go:197`** — `runAudit`: gera fragmento HTML com o seletor
   `size`, renderiza `audit-grid` de `audit-card` (uma por fonte).
 - O handler também expõe (desde o merge #6) `/ui/system-status` (health server-side) e
   `/ui/rabbitmq-queues` (proxy do Management API).
@@ -111,7 +113,9 @@ exatamente **quais testes avançados são necessários e como apresentá-los no 
 
 #### d) Compatibilidade retida
 - `RunFullAudit` e `GET /api/v1/quantum-entropy/audit` **permanecem intactos**
-  (README/curl continuam válidos).
+  (README/curl continuam válidos) — apenas a ordem interna mudou: a amostra quântica é
+  obtida antes das publicações, e pool vazio vira `ErrNoQuantumData` em vez de um
+  relatório sem resultados.
 
 #### e) Testes Go
 - **`validators_test.go`**: data-driven com

@@ -193,7 +193,7 @@ errors.Is(err, gorm.ErrRecordNotFound)                                  # FindKe
 
 amqp.Dial(url) → c.channel.ExchangeDeclare(name, "topic", durable, ...) # connection.go  (topic exchanges)
 c.channel.QueueDeclare / QueueBind(queue, routingKey, exchange)          # connection.go
-p.conn.Channel().PublishWithContext(ctx, exch, rk, false, false, amqp.Publishing{...}) # publisher.go
+ch, err := p.conn.Channel()  →  ch.PublishWithContext(ctx, exch, rk, ...) # publisher.go (lazy connect)
 
 c.JSON(http.StatusOK, gin.H{...})     # respostas REST
 c.Data(http.StatusOK, "text/html", ...) # fragmentos HTMX
@@ -333,10 +333,31 @@ type KeyStore interface {
 ```go
 func (s *Service) aesGCMEncrypt(plaintext []byte) (ciphertext, nonce []byte, err error)  // named returns
 func (s *Service) aesGCMDecrypt(ciphertext, nonce []byte) ([]byte, error)
-func buildQuantumSeed(records []QuantumData) []byte
-type xorReader struct{ seed []byte; offset int }   // satisfaz io.Reader (interface)
-func newXORReader(seed []byte) io.Reader
+func (s *Service) masterKey() []byte                       // :73 — SHA-256(secret) sob sync.Once
+func buildQuantumSeed(records []QuantumData) []byte        // :283 — devolve nil p/ lista vazia OU base64 ruim
+type xorReader struct{ mu sync.Mutex; seed []byte; offset int }   // :300 — satisfaz io.Reader (interface)
+func newXORReader(seed []byte) io.Reader                   // :306
+func (x *xorReader) Read(p []byte) (int, error)            // :310 — lock só no laço XOR (:321-326)
 ```
+
+> **`xorReader` sob `sync.Mutex` (branch `feat/sync-primitives-mutex-once`).** O lock
+> cobre **só o laço XOR** (`:321-326`); `rand.Reader.Read` fica de fora, para o CSPRNG
+> continuar rodando em paralelo. A guarda `if len(x.seed) == 0` (`:315-317`) vem antes
+> do lock e não é decorativa: `buildQuantumSeed` devolve `nil` para lista vazia **ou
+> base64 corrompido**, `newXORReader(nil)` é o caminho real, e sem a guarda o laço faz
+> `x.offset % len(x.seed)` → `panic: integer divide by zero` dentro da geração de chave.
+> Cobrindo com `TestXORReaderWithoutSeedReadsFromRand`.
+>
+> **Hoje não há race**: o reader nasce e morre dentro de `GenerateKey`, em uma
+> goroutine só. O lock existe para blindar a primitiva antes de o CIRCL reutilizá-la
+> como seed de ML-KEM/ML-DSA, cuja geração pode consumir o reader em paralelo
+> (`docs/CIRCL_INTEGRATION_PLAN.md:95,163`).
+>
+> **O `sync.Once` da branch está aqui, não no AMQP**: `masterKey` (`:73`) deriva a chave
+> AES-256 com `keyOnce`, e a derivação é preguiçosa — `NewService` valida o segredo e
+> nada mais é materializado antes do primeiro uso. A justificativa **não** é performance
+> (SHA-256 de 32 B é ~100 ns, uma vez por processo): é manter a validação de
+> `NewService` como portão único do segredo.
 
 **`handler.go`** — REST sob `/api/v1`:
 - `POST   /keys` → gerar (`{alias, keySize?}`)
@@ -347,15 +368,59 @@ func newXORReader(seed []byte) io.Reader
 
 ### 5.3 `internal/messaging` — RabbitMQ
 
-**`connection.go`**
+**`connection.go`** (`internal/messaging/connection.go`)
 ```go
-func NewConnection(url string) (*Connection, error)   // 5 tentativas com backoff (2s..10s)
-func (c *Connection) Channel() *amqp.Channel
-func (c *Connection) Close()
+func NewConnection(url string) *Connection              // lazy: NÃO faz dial (reconnectDelay = 5s)
+func (c *Connection) Channel() (*amqp.Channel, error)    // conecta no 1º uso, sob c.mu (:114)
+func (c *Connection) connectLocked() error               // 1 tentativa + cache negativo; exige c.mu (:153)
+func (c *Connection) reopenChannelLocked() error         // canal morto em sessão viva; exige c.mu (:200)
+func (c *Connection) Close() error                      // toma c.mu, SÓ para roubar os campos (:259)
 func (c *Connection) DeclareExchange(name string) error                      // topic, durable
 func (c *Connection) DeclareQueue(queueName, exchange, routingKey string) (amqp.Queue, error)
 func (c *Connection) DeclareDeadLetterExchange(dlxName string) error         // fanout + DLX
+func (c *Connection) declareTopology() error             // privado, em consumer.go (:92)
 ```
+
+> **Lazy connect (branch `feat/sync-primitives-mutex-once`).** O construtor não toca
+> a rede; o dial acontece no primeiro `Channel()`. O antigo `connect()` de **5 tentativas
+> com backoff** (`time.Sleep((i+1)*2s)`, ~30 s) foi removido: `Channel()` agora roda
+> **dentro de `Publish`**, onde 30 s de espera bloqueariam um request HTTP. No lugar:
+> uma única tentativa (`connectLocked`) + **cache negativo** (`lastDialFail` +
+> `reconnectDelay`, default 5 s) que impede tempestade de dial enquanto o broker está
+> fora. O retry vem de graça dos chamadores (o scheduler faz tick a cada 5 s; cada
+> publish tenta de novo). Quem roda `Channel()` concorrente são os **handlers HTTP do
+> Gin** (uma goroutine por request) e o path de `audit` — não os workers do refill,
+> que só fazem fetch HTTP e empurram para `results`.
+
+> **`Close()` devolve `error` e não segura `c.mu` durante o close.** Ele toma o lock
+> só para roubar `session`/`channel`/`topologyDeclared` e zerá-los, solta, e **aí**
+> fecha canal e sessão, devolvendo os erros agregados por `errors.Join`. O handshake de
+> close do AMQP é um round trip **sem timeout próprio**: segurar o lock através dele
+> travaria todo `Channel()` — logo, todo `Publish`, inclusive o que está servindo um
+> request HTTP — por quanto tempo o broker travado demorar. O `Close()` também zera o
+> cache negativo, para que um par `Close()`/`Channel()` volte a dialar em vez de
+> esperar `reconnectDelay` sem motivo.
+
+> **Liveness de canal, não só de sessão.** `connectLocked` consulta
+> `c.channel.IsClosed()` além de `c.session.IsClosed()`. O broker mata o **canal**,
+> não a conexão, quando uma declaração é recusada com `PRECONDITION_FAILED` (fila com
+> argumentos divergentes da visão dele). Checando só a sessão, o canal morto continuava
+> sendo devolvido e todo `Publish` posterior levava `amqp.ErrClosed` **para sempre**,
+> sem redial, sem redéclaro de topologia e sem erro do lado do `Channel()`. A correção
+> reabre o canal **na sessão viva** (um round trip) em vez de redialar (TCP + handshake
+> + auth), porque sessão viva por definição já passou pelo handshake — e é no rastro de
+> um restart storm que o dial caro mais dói. O canal novo começa com
+> `topologyDeclared = false` e declara a topologia dele.
+
+> **A topologia NÃO usa `sync.Once`.** O estado é `topologyDeclared bool` sob `c.mu`
+> (`connection.go:75`), marcado `true` só depois de `c.topology()` retornar `nil`. Um
+> `Once` gasta o disparo mesmo em falha, o que fixaria `topologyErr` para sempre numa
+> falha transitória, e não pode ser desfeito quando o canal muda — o `Once` gasto
+> deixaria o canal novo do reconnect sem exchanges e sem filas, e todo `Publish`
+> depois de um restart do broker levaria `404 NOT_FOUND`. O `sync.Once` real da branch
+> está em `internal/keymanager/service.go:73` (derivação da chave AES), onde é
+> apropriado: função pura de um segredo imutável, que não falha transitoriamente.
+> Análise completa em `docs/PROGRESS_STATUS.md`.
 
 **`events.go` — topologia (constantes + structs)**
 
@@ -401,6 +466,10 @@ Eventos (JSON):
 - `PoolLowEvent{currentCount, threshold, timestamp}`
 - `PoolOkEvent{currentCount, threshold, timestamp}`
 
+> `audit.start` / `audit.complete` só são publicados quando existe dado quântico no pool.
+> Com o pool vazio, `RunFullAudit` e `RunSuites` retornam `audit.ErrNoQuantumData` **antes**
+> de qualquer `Publish` — abrir `/ui/audit` ou `/ui/lab` não gera mais eventos fantasma.
+
 **`publisher.go`**
 ```go
 // Interface para consumidores (services/handlers dependem da abstração).
@@ -420,11 +489,38 @@ JSON-marshal do evento + publica com `ContentType=application/json`,
 ```go
 type MessageHandler func(body []byte) error
 func NewConsumer(conn *Connection) *Consumer
-func (c *Consumer) Consume(queueName string, handler MessageHandler) error
-func (c *Consumer) ConsumeWithPrefetch(queueName string, prefetch int, handler MessageHandler) error
-func SetupExchangesAndQueues(conn *Connection) error   // declara toda a topologia
+func (c *Consumer) Consume(queueName string, handler MessageHandler) error          // Channel() em :24
+func (c *Consumer) ConsumeWithPrefetch(queueName string, prefetch int, handler MessageHandler) error  // Channel() em :68
+func (c *Connection) declareTopology() error   // privado (era SetupExchangesAndQueues exportado) — :92
 ```
 Ack manual: se o handler falhar → `msg.Nack(false, true)` (requeue); se ok → `msg.Ack(false)`.
+
+> **`SetupExchangesAndQueues` → `declareTopology` (branch `feat/sync-primitives-mutex-once`).**
+> A função exportada virou **método privado** de `Connection`
+> (`internal/messaging/consumer.go:92-135`), usando `c.channel` em vez de um
+> `*Connection` recebido como parâmetro. Ela passou a ser chamada de dentro de
+> `Channel()` enquanto `c.topologyDeclared` estiver `false`
+> (`internal/messaging/connection.go:114-127`), porque o caminho lazy é entrado
+> **concorrentemente** pelos **handlers HTTP do Gin** (uma goroutine por request) e
+> pelo path de `audit` — antes ela rodava uma única vez, sequencialmente, no `main`.
+> **Não** são os workers do refill do collector: eles só fazem `s.fetch()` (HTTP) e
+> empurram para `results`; o laço single-writer de `saveRecords`
+> (`internal/collector/scheduler.go:249`) chama `publishEntropyEvents` (`:270`, a
+> partir de `:265`), e ele roda em uma goroutine só.
+> A lista de exchanges/DLX/filas é idêntica. A lista **não** é memoizada por
+> `sync.Once`: ver a nota sobre topologia em 5.3.
+
+> **`ConsumeWithPrefetch` chama `Channel()` duas vezes** (uma para o `Qos`, outra
+> dentro de `Consume`). É redundante, mas barato depois da primeira — a sessão está de
+> pé e a topologia declarada — e não é bug. **Pendente:** colapsar isso mudaria uma
+> assinatura pública ou inventaria uma variante que aceita o canal, e não há chamador
+> de produção. Registrado, não refatorado.
+
+> **Cobertura: 0%.** `declareTopology` e os `Declare*` são round trips AMQP sobre
+> `*amqp.Channel`, um tipo concreto que a seam `amqpSession` não alcança. A interface
+> rasa `amqpChannel` que tornaria isso testável foi **adiada por decisão**, e não
+> existe suíte de integração nem build tag que compense. Detalhe em
+> `docs/PROGRESS_STATUS.md`.
 
 ### 5.4 `internal/collector` — scheduler de coleta
 
@@ -476,9 +572,11 @@ type AuditReport struct {
 func NewService(store keymanager.EntropyStore, pub messaging.EventPublisher) *Service
 func (s *Service) RunFullAudit(requestedSize int) (*AuditReport, error)
 ```
-`RunFullAudit`: publica `audit.start`, amostra **Quantum (LFD)** do pool, gera amostras de
-**CSPRNG** (`crypto/rand`) e **PRNG** (`math/rand` seed `12345`) do mesmo tamanho, e roda as
-5 métricas para cada fonte.
+`RunFullAudit`: amostra **Quantum (LFD)** do pool **primeiro** e, só depois, publica
+`audit.start`; gera amostras de **CSPRNG** (`crypto/rand`) e **PRNG** (`math/rand` seed
+`12345`) do mesmo tamanho, roda as 5 métricas para cada fonte e publica `audit.complete`.
+Se o pool estiver vazio, retorna `ErrNoQuantumData` e **não publica nenhum evento** — evita
+eventos fantasma quando a UI abre `/ui/audit` antes do pool encher.
 
 **`handler.go`** — `GET /api/v1/quantum-entropy/audit?size=8192` (JSON `AuditReport`).
 
@@ -640,13 +738,14 @@ func (s *Service) RunSuites(suiteID string, requestedSize int, seed int64) (*Sui
 ```
 1. Busca a `suiteDef` no registry; inexistente → `ErrUnknownSuite`.
 2. `seed == 0` → `DefaultPRNGSeed`.
-3. Amostra **Quantum (LFD)** do pool (`getQuantumSample("LFD", size)`). Se não houver dados →
-   resultado vazio (UI mostra mensagem).
-4. Se a amostra quântica existe, roda a suíte nas **3 fontes** com o mesmo tamanho real:
+3. Amostra **Quantum (LFD)** do pool (`getQuantumSample("LFD", size)`) **antes** de qualquer
+   publicação. Sem dados → retorna `ErrNoQuantumData` e **não publica nenhum evento**.
+4. Só então publica `audit.start` e roda a suíte nas **3 fontes** com o mesmo tamanho real:
    - `Quantum (LFD)` — bytes reais do pool.
    - `Java SecureRandom (CSPRNG)` — `crypto/rand`.
    - `Java Random (LCRNG)` — `math/rand` semeado.
-5. `Indicative = realSampleSize < def.minBytes` → a UI exibe banner "indicative".
+5. Monta o `SuiteResult` (`Indicative = realSampleSize < def.minBytes` → a UI exibe banner
+   "indicative") e publica `audit.complete`.
 
 > **Por que "Java ..." nos rótulos da fonte?** O projeto original é um port de um sistema
 > Java, cuja auditoria comparava o gerador quântico com `SecureRandom` e `Random` do Java.
@@ -692,8 +791,12 @@ coloridos `.verdict-pass|warn|fail`.
 **`cmd/keymanager/main.go`** — ordem de inicialização:
 1. SQLite in-memory via GORM.
 2. `NewRepository` (AutoMigrate).
-3. RabbitMQ (`NewConnection` + `SetupExchangesAndQueues`) — se indisponível, **warn e segue** (pub fica `nil`).
-4. `var pub messaging.EventPublisher` (interface) → `NewScheduler` → `NewService` (`repo, repo, ...` — mesmo `*Repository` nas 2 interfaces).
+3. RabbitMQ **lazy**: `NewConnection` (que **não** faz dial) seguido de um
+   `mqConn.Channel()` de aquecimento. Se o broker não responder, é só um **warn** —
+   o `Publisher` é construído mesmo assim e cada `Publish` tenta reconectar sob
+   demanda (cache negativo de 5 s).
+4. `pub := messaging.NewPublisher(mqConn)` (concreto, nunca `nil` no caminho real) →
+   `NewScheduler` → `NewService` (`repo, repo, ...` — mesmo `*Repository` nas 2 interfaces).
 5. `svc.OnPoolLow = scheduler.TriggerRefill` (callback).
 6. `scheduler.Start()` (`defer scheduler.Stop()`).
 7. Gin `gin.New()` + `gin.Logger()` + `middleware.Recovery()` (custom: defer/recover, stack via slog, JSON 500);
@@ -774,7 +877,7 @@ Exemplos no projeto:
 ```go
 // 1) Declaração + inferência de tipo (a forma mais comum):
 db, err := gorm.Open(...)          // cmd/keymanager/main.go — tipo inferido de gorm.Open
-r := mrand.New(mrand.NewSource(seed)) // audit/service.go:149
+r := mrand.New(mrand.NewSource(seed)) // audit/service.go:153
 resp, err := c.httpClient.Get(url)    // quantum/client_lfd.go:44
 
 // 2) Com erro em multi-retorno — o erro é espalhado na mesma linha:
@@ -968,15 +1071,18 @@ go test ./internal/audit/validators/ -run TestCumulativeSumsDistribution -v
 - **Sentinela** apenas em casos específicos: `ErrUnknownSuite` (lab) e
   `errors.Is(err, gorm.ErrRecordNotFound)` (not-found).
 - **`FindKeyByID`** retorna `(nil, nil)` quando não acha — padrão "nil-safety".
-- **Messaging opcional:** `publish()` é no-op se `s.pub == nil`; RabbitMQ indisponível só
-  loga warn e segue.
+- **Messaging resiliente:** o `Publisher` é sempre construído (não há mais `pub == nil` no
+  caminho real desde o lazy connect da branch `feat/sync-primitives-mutex-once`). Um RabbitMQ
+  indisponível só gera **warn** no boot; cada tentativa de publish/reconsulta tenta reconectar
+  sob demanda, respeitando o cache negativo de 5 s. O guard `publish()` → no-op se `s.pub == nil`
+  permanece, mas agora só serve aos testes que injetam um publisher nil.
 
 ---
 
 ## 13. Itens Futuros / TODOs
 
 - **Consumidores RabbitMQ** — topologia pronta, mas nenhum consumer processa as filas ainda.
-- `internal/audit/service.go:118` — `TODO: Fetch actual quantum data from repository`
+- `internal/audit/service.go:123` — `TODO: Fetch actual quantum data from repository`
   (hoje `getQuantumSample` itera `FindAllUnusedBySource`; evoluir para query eficiente por tamanho).
 - `internal/collector/scheduler.go:159` — `TODO: Add NIST SP 800-90B entropy validation here`.
 - Persistent storage (S3/arquivo) se houver requisito de sobrevivência de pool.

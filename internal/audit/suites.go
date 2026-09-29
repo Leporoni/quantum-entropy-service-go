@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"sync"
 	"time"
 
 	"github.com/leporoni/quantum-entropy-go-service/internal/audit/validators"
@@ -114,6 +115,15 @@ func (s *Service) RunSuites(suiteID string, requestedSize int, seed int64) (*Sui
 		seed = DefaultPRNGSeed
 	}
 
+	// The quantum sample is acquired before any publication: with an empty pool
+	// the suite never runs, so no audit.start/audit.complete event is emitted.
+	queueSample, err := s.getQuantumSample("LFD", requestedSize)
+	if err != nil || len(queueSample) == 0 {
+		slog.Warn("Lab suite skipped: no quantum data in pool", "suite", suiteID, "requestedSize", requestedSize)
+		return nil, ErrNoQuantumData
+	}
+	realSampleSize := len(queueSample)
+
 	slog.Info("Starting Entropy Lab Suite", "suite", suiteID, "requestedSize", requestedSize, "seed", seed)
 
 	if s.pub != nil {
@@ -126,24 +136,16 @@ func (s *Service) RunSuites(suiteID string, requestedSize int, seed int64) (*Sui
 		}
 	}
 
-	var results []SourceResult
-	realSampleSize := 0
-
-	queueSample, err := s.getQuantumSample("LFD", requestedSize)
-	if err == nil && len(queueSample) > 0 {
-		realSampleSize = len(queueSample)
-		results = append(results, SourceResult{Source: "Quantum (LFD)", Metrics: def.run(queueSample)})
-	}
-
-	if realSampleSize > 0 {
-		results = append(results, SourceResult{
+	results := []SourceResult{
+		{Source: "Quantum (LFD)", Metrics: def.run(queueSample)},
+		{
 			Source:  "Java SecureRandom (CSPRNG)",
 			Metrics: def.run(getCsprngSample(realSampleSize)),
-		})
-		results = append(results, SourceResult{
+		},
+		{
 			Source:  "Java Random (LCRNG)",
 			Metrics: def.run(getPrngSample(realSampleSize, seed)),
-		})
+		},
 	}
 
 	result := &SuiteResult{
@@ -240,84 +242,217 @@ func fmtP(p float64) string {
 	return fmt.Sprintf("%.6f", p)
 }
 
-// ---- suites ----
+// ---- fan-in ----
 
-func runBasic(data []byte) []Metric {
-	shannon := validators.CalculateShannonEntropy(data)
-	chi := validators.CalculateChiSquare(data)
-	pi := validators.EstimatePiMonteCarlo(data)
-	comp := validators.CalculateCompressionRatio(data)
-	reps := validators.CountRepetitions(data)
-
-	expected := float64(len(data)-1) / 256.0
-	ratio := 1.0
-	if expected > 0 {
-		ratio = float64(reps) / expected
-	}
-
-	return []Metric{
-		{Name: "Shannon Entropy", Value: fmt.Sprintf("%.3f bits/byte", shannon), Reference: "8.0 (uniform)", Verdict: highVerdict(shannon, 7.9, 7.5)},
-		{Name: "Chi-Square", Value: fmt.Sprintf("%.2f", chi), Reference: "~255", Verdict: bandVerdict(chi, 200, 310, 170, 350)},
-		{Name: "Pi Estimate (Monte Carlo)", Value: fmt.Sprintf("%.4f", pi), Reference: "3.1416", Verdict: bandVerdict(pi, 3.12, 3.16, 3.06, 3.22)},
-		{Name: "Compression Ratio", Value: fmt.Sprintf("%.4f", comp), Reference: "~1.0 (incompressible)", Verdict: lowVerdict(comp, 1.08, 1.20)},
-		{Name: "Repetitions", Value: fmt.Sprintf("%d (%.1fx expected)", reps, ratio), Reference: "~n/256", Verdict: lowVerdict(ratio, 2, 4)},
-	}
+// indexedMetrics carries one closure's result together with the position it must
+// occupy in the final slice, because channel receives arrive in completion order.
+type indexedMetrics struct {
+	idx   int
+	items []Metric
 }
 
-func runMinEntropy(data []byte) []Metric {
-	mcv := validators.MostCommonValue(data)
-	mcvp := float64(mcv) / float64(len(data))
-	distinct := validators.DistinctByteValues(data)
-	expectedDistinct := validators.ExpectedDistinctValues(len(data))
-	distinctRatio := 1.0
-	if expectedDistinct > 0 {
-		distinctRatio = float64(distinct) / expectedDistinct
+// runFanIn runs every closure in its own goroutine and folds the results back
+// into a single slice, preserving the input order. A dedicated goroutine waits
+// on the WaitGroup and closes the channel, so the collector's range loop
+// terminates only after every producer has finished. Closures must stay
+// read-only over captured data: ordering is restored by index, not arrival.
+func runFanIn(fns []func() []Metric) []Metric {
+	ch := make(chan indexedMetrics, len(fns))
+
+	var wg sync.WaitGroup
+	wg.Add(len(fns))
+	for i, fn := range fns {
+		go func() {
+			defer wg.Done()
+			ch <- indexedMetrics{idx: i, items: fn()}
+		}()
 	}
 
-	return []Metric{
-		{Name: "Min-Entropy (8-bit MCV)", Value: fmt.Sprintf("%.4f bits/byte", validators.EstimateMinEntropyMCV(data)), Reference: "8.0 ideal", Verdict: highVerdict(validators.EstimateMinEntropyMCV(data), 7.9, 7.0)},
-		{Name: "Min-Entropy (bit-level)", Value: fmt.Sprintf("%.4f bits/bit", validators.EstimateMinEntropyBits(data)), Reference: "1.0 ideal", Verdict: highVerdict(validators.EstimateMinEntropyBits(data), 0.99, 0.95)},
-		{Name: "Most Common Value", Value: fmt.Sprintf("%d (%.4f)", mcv, mcvp), Reference: "~n/256", Verdict: lowVerdict(mcvp, 0.0042, 0.0080)},
-		{Name: "Distinct byte values", Value: fmt.Sprintf("%d / %.1f expected", distinct, expectedDistinct), Reference: "256(1-e^(-n/256))", Verdict: highVerdict(distinctRatio, 0.99, 0.95)},
+	go func() {
+		wg.Wait()
+		close(ch)
+	}()
+
+	groups := make([][]Metric, len(fns))
+	for im := range ch {
+		groups[im.idx] = im.items
 	}
-}
 
-func runNIST(data []byte) []Metric {
-	bits := validators.ToBits(data)
-	n := len(bits)
-
-	blockM := 128
-	if n < 128 {
-		blockM = 8
-	}
-	p1, p2, serialM := validators.NISTSerial(bits)
-	cumFwd, cumRev := validators.NISTCumulativeSums(bits)
-
-	metrics := []Metric{
-		{Name: "Monobit (Frequency)", Value: fmtP(validators.NISTMonobit(bits)), Reference: "p >= 0.01", Verdict: pVerdict(validators.NISTMonobit(bits))},
-		{Name: fmt.Sprintf("Block Frequency (M=%d)", blockM), Value: fmtP(validators.NISTBlockFrequency(bits, blockM)), Reference: "p >= 0.01", Verdict: pVerdict(validators.NISTBlockFrequency(bits, blockM))},
-		{Name: "Runs", Value: fmtP(validators.NISTRuns(bits)), Reference: "p >= 0.01", Verdict: pVerdict(validators.NISTRuns(bits))},
-		{Name: "Longest Run of Ones", Value: fmtP(validators.NISTLongestRunOfOnes(bits)), Reference: "p >= 0.01", Verdict: pVerdict(validators.NISTLongestRunOfOnes(bits))},
-		{Name: "Approximate Entropy (m=5)", Value: fmtP(validators.NISTApproximateEntropy(bits, 5)), Reference: "p >= 0.01", Verdict: pVerdict(validators.NISTApproximateEntropy(bits, 5))},
-		{Name: fmt.Sprintf("Serial (m=%d, p1)", serialM), Value: fmtP(p1), Reference: "p >= 0.01", Verdict: pVerdict(p1)},
-		{Name: fmt.Sprintf("Serial (m=%d, p2)", serialM), Value: fmtP(p2), Reference: "p >= 0.01", Verdict: pVerdict(p2)},
-		{Name: "Cumulative Sums (forward)", Value: fmtP(cumFwd), Reference: "p >= 0.01", Verdict: pVerdict(cumFwd)},
-		{Name: "Cumulative Sums (reverse)", Value: fmtP(cumRev), Reference: "p >= 0.01", Verdict: pVerdict(cumRev)},
+	metrics := make([]Metric, 0, len(fns))
+	for _, g := range groups {
+		metrics = append(metrics, g...)
 	}
 	return metrics
 }
 
+// ---- suites ----
+
+// runBasic folds the five global statistical metrics in parallel.
+func runBasic(data []byte) []Metric {
+	return runFanIn([]func() []Metric{
+		func() []Metric {
+			shannon := validators.CalculateShannonEntropy(data)
+			return []Metric{
+				{Name: "Shannon Entropy", Value: fmt.Sprintf("%.3f bits/byte", shannon), Reference: "8.0 (uniform)", Verdict: highVerdict(shannon, 7.9, 7.5)},
+			}
+		},
+		func() []Metric {
+			chi := validators.CalculateChiSquare(data)
+			return []Metric{
+				{Name: "Chi-Square", Value: fmt.Sprintf("%.2f", chi), Reference: "~255", Verdict: bandVerdict(chi, 200, 310, 170, 350)},
+			}
+		},
+		func() []Metric {
+			pi := validators.EstimatePiMonteCarlo(data)
+			return []Metric{
+				{Name: "Pi Estimate (Monte Carlo)", Value: fmt.Sprintf("%.4f", pi), Reference: "3.1416", Verdict: bandVerdict(pi, 3.12, 3.16, 3.06, 3.22)},
+			}
+		},
+		func() []Metric {
+			comp := validators.CalculateCompressionRatio(data)
+			return []Metric{
+				{Name: "Compression Ratio", Value: fmt.Sprintf("%.4f", comp), Reference: "~1.0 (incompressible)", Verdict: lowVerdict(comp, 1.08, 1.20)},
+			}
+		},
+		func() []Metric {
+			reps := validators.CountRepetitions(data)
+			expected := float64(len(data)-1) / 256.0
+			ratio := 1.0
+			if expected > 0 {
+				ratio = float64(reps) / expected
+			}
+			return []Metric{
+				{Name: "Repetitions", Value: fmt.Sprintf("%d (%.1fx expected)", reps, ratio), Reference: "~n/256", Verdict: lowVerdict(ratio, 2, 4)},
+			}
+		},
+	})
+}
+
+// runMinEntropy folds the NIST SP 800-90B min-entropy estimates in parallel.
+func runMinEntropy(data []byte) []Metric {
+	return runFanIn([]func() []Metric{
+		func() []Metric {
+			minEntropy := validators.EstimateMinEntropyMCV(data)
+			return []Metric{
+				{Name: "Min-Entropy (8-bit MCV)", Value: fmt.Sprintf("%.4f bits/byte", minEntropy), Reference: "8.0 ideal", Verdict: highVerdict(minEntropy, 7.9, 7.0)},
+			}
+		},
+		func() []Metric {
+			minEntropyBits := validators.EstimateMinEntropyBits(data)
+			return []Metric{
+				{Name: "Min-Entropy (bit-level)", Value: fmt.Sprintf("%.4f bits/bit", minEntropyBits), Reference: "1.0 ideal", Verdict: highVerdict(minEntropyBits, 0.99, 0.95)},
+			}
+		},
+		func() []Metric {
+			mcv := validators.MostCommonValue(data)
+			mcvp := float64(mcv) / float64(len(data))
+			return []Metric{
+				{Name: "Most Common Value", Value: fmt.Sprintf("%d (%.4f)", mcv, mcvp), Reference: "~n/256", Verdict: lowVerdict(mcvp, 0.0042, 0.0080)},
+			}
+		},
+		func() []Metric {
+			distinct := validators.DistinctByteValues(data)
+			expectedDistinct := validators.ExpectedDistinctValues(len(data))
+			distinctRatio := 1.0
+			if expectedDistinct > 0 {
+				distinctRatio = float64(distinct) / expectedDistinct
+			}
+			return []Metric{
+				{Name: "Distinct byte values", Value: fmt.Sprintf("%d / %.1f expected", distinct, expectedDistinct), Reference: "256(1-e^(-n/256))", Verdict: highVerdict(distinctRatio, 0.99, 0.95)},
+			}
+		},
+	})
+}
+
+// runNIST folds the SP 800-22 subset in parallel. The serial and cumulative-sums
+// closures each call their validator once and emit both metrics from that single
+// computation.
+func runNIST(data []byte) []Metric {
+	bits := validators.ToBits(data)
+
+	blockM := 128
+	if len(bits) < 128 {
+		blockM = 8
+	}
+
+	return runFanIn([]func() []Metric{
+		func() []Metric {
+			p := validators.NISTMonobit(bits)
+			return []Metric{
+				{Name: "Monobit (Frequency)", Value: fmtP(p), Reference: "p >= 0.01", Verdict: pVerdict(p)},
+			}
+		},
+		func() []Metric {
+			p := validators.NISTBlockFrequency(bits, blockM)
+			return []Metric{
+				{Name: fmt.Sprintf("Block Frequency (M=%d)", blockM), Value: fmtP(p), Reference: "p >= 0.01", Verdict: pVerdict(p)},
+			}
+		},
+		func() []Metric {
+			p := validators.NISTRuns(bits)
+			return []Metric{
+				{Name: "Runs", Value: fmtP(p), Reference: "p >= 0.01", Verdict: pVerdict(p)},
+			}
+		},
+		func() []Metric {
+			p := validators.NISTLongestRunOfOnes(bits)
+			return []Metric{
+				{Name: "Longest Run of Ones", Value: fmtP(p), Reference: "p >= 0.01", Verdict: pVerdict(p)},
+			}
+		},
+		func() []Metric {
+			p := validators.NISTApproximateEntropy(bits, 5)
+			return []Metric{
+				{Name: "Approximate Entropy (m=5)", Value: fmtP(p), Reference: "p >= 0.01", Verdict: pVerdict(p)},
+			}
+		},
+		func() []Metric {
+			p1, p2, serialM := validators.NISTSerial(bits)
+			return []Metric{
+				{Name: fmt.Sprintf("Serial (m=%d, p1)", serialM), Value: fmtP(p1), Reference: "p >= 0.01", Verdict: pVerdict(p1)},
+				{Name: fmt.Sprintf("Serial (m=%d, p2)", serialM), Value: fmtP(p2), Reference: "p >= 0.01", Verdict: pVerdict(p2)},
+			}
+		},
+		func() []Metric {
+			cumFwd, cumRev := validators.NISTCumulativeSums(bits)
+			return []Metric{
+				{Name: "Cumulative Sums (forward)", Value: fmtP(cumFwd), Reference: "p >= 0.01", Verdict: pVerdict(cumFwd)},
+				{Name: "Cumulative Sums (reverse)", Value: fmtP(cumRev), Reference: "p >= 0.01", Verdict: pVerdict(cumRev)},
+			}
+		},
+	})
+}
+
+// runStructure folds the order/correlation analysis in parallel. The
+// autocorrelation closure emits two metrics from one pass over the sample.
 func runStructure(data []byte) []Metric {
 	bits := validators.ToBits(data)
-	maxZ, outOfRange, worstLag := validators.StructureAutocorrelation(data, 16)
-	runsZ := validators.StructureRunsZ(bits)
-	r, rZ := validators.StructureSerialCorrelation(data)
 
-	return []Metric{
-		{Name: "Bit bias (max |z| over 8 positions)", Value: fmt.Sprintf("%.3f", validators.StructureBitBias(data)), Reference: "|z| < 3", Verdict: zVerdict(validators.StructureBitBias(data))},
-		{Name: fmt.Sprintf("Autocorrelation lags 1-16 (max |z| @lag %d)", worstLag), Value: fmt.Sprintf("%.3f", maxZ), Reference: "|z| < 2 ok, >3 fail", Verdict: zVerdict(maxZ)},
-		{Name: "Autocorrelation lags with |z| > 2", Value: fmt.Sprintf("%d", outOfRange), Reference: "0 ideal", Verdict: lowVerdict(float64(outOfRange), 0, 1)},
-		{Name: "Runs z-score", Value: fmt.Sprintf("%.3f", runsZ), Reference: "|z| < 3", Verdict: zVerdict(runsZ)},
-		{Name: "Serial correlation (bytes)", Value: fmt.Sprintf("r=%.4f (z=%.3f)", r, rZ), Reference: "|z| < 3", Verdict: zVerdict(rZ)},
-	}
+	return runFanIn([]func() []Metric{
+		func() []Metric {
+			bitBias := validators.StructureBitBias(data)
+			return []Metric{
+				{Name: "Bit bias (max |z| over 8 positions)", Value: fmt.Sprintf("%.3f", bitBias), Reference: "|z| < 3", Verdict: zVerdict(bitBias)},
+			}
+		},
+		func() []Metric {
+			maxZ, outOfRange, worstLag := validators.StructureAutocorrelation(data, 16)
+			return []Metric{
+				{Name: fmt.Sprintf("Autocorrelation lags 1-16 (max |z| @lag %d)", worstLag), Value: fmt.Sprintf("%.3f", maxZ), Reference: "|z| < 2 ok, >3 fail", Verdict: zVerdict(maxZ)},
+				{Name: "Autocorrelation lags with |z| > 2", Value: fmt.Sprintf("%d", outOfRange), Reference: "0 ideal", Verdict: lowVerdict(float64(outOfRange), 0, 1)},
+			}
+		},
+		func() []Metric {
+			runsZ := validators.StructureRunsZ(bits)
+			return []Metric{
+				{Name: "Runs z-score", Value: fmt.Sprintf("%.3f", runsZ), Reference: "|z| < 3", Verdict: zVerdict(runsZ)},
+			}
+		},
+		func() []Metric {
+			r, rZ := validators.StructureSerialCorrelation(data)
+			return []Metric{
+				{Name: "Serial correlation (bytes)", Value: fmt.Sprintf("r=%.4f (z=%.3f)", r, rZ), Reference: "|z| < 3", Verdict: zVerdict(rZ)},
+			}
+		},
+	})
 }

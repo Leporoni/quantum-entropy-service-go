@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -32,6 +33,12 @@ func (h *Handler) RunAudit(c *gin.Context) {
 	}
 
 	report, err := h.service.RunFullAudit(size)
+	if errors.Is(err, ErrNoQuantumData) {
+		// An empty pool is a legitimate state, not a server error: report it
+		// as a 200 with an empty result set, preserving the endpoint contract.
+		c.JSON(http.StatusOK, gin.H{"sampleSize": 0, "results": []AuditMetrics{}})
+		return
+	}
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

@@ -2,6 +2,7 @@ package ui
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -202,7 +203,7 @@ func (h *Handler) runAudit(c *gin.Context) {
 	report, err := h.auditSvc.RunFullAudit(size)
 	if err != nil || len(report.Results) == 0 {
 		msg := "No quantum data in pool yet. Wait for pool to fill."
-		if err != nil {
+		if err != nil && !errors.Is(err, audit.ErrNoQuantumData) {
 			msg = err.Error()
 		}
 		c.Data(http.StatusOK, "text/html", []byte(fmt.Sprintf(`
@@ -245,6 +246,11 @@ func (h *Handler) runLab(c *gin.Context) {
 
 	result, err := h.auditSvc.RunSuites(suite, size, seed)
 	if err != nil {
+		if errors.Is(err, audit.ErrNoQuantumData) {
+			c.Data(http.StatusOK, "text/html", []byte(`
+<div class="empty-state">⚠️ No quantum data in pool yet. Wait for pool to fill.</div>`))
+			return
+		}
 		c.Data(http.StatusOK, "text/html", []byte(fmt.Sprintf(`
 <div class="empty-state">⚠️ %s</div>`, err.Error())))
 		return
