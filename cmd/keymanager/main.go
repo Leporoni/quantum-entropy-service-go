@@ -34,19 +34,21 @@ func main() {
 		os.Exit(1)
 	}
 
-	// RabbitMQ
-	var pub messaging.EventPublisher
-	mqConn, err := messaging.NewConnection(rabbitmqURL)
-	if err != nil {
-		slog.Warn("RabbitMQ unavailable, continuing without messaging", "error", err)
-	} else {
-		defer mqConn.Close()
-		if err := messaging.SetupExchangesAndQueues(mqConn); err != nil {
-			slog.Warn("Failed to setup exchanges/queues", "error", err)
-		} else {
-			pub = messaging.NewPublisher(mqConn)
-		}
+	// RabbitMQ. Messaging connects lazily on first use, so a broker that is down at
+	// boot no longer disables event publishing for the process lifetime.
+	//
+	// The defer below never runs: the only way out of main is r.Run() returning an
+	// error, and that path calls os.Exit(1), which skips every deferred function in
+	// the process. It is here because it is the right thing to write and because a
+	// future graceful-shutdown path would make it real. PENDING: replace os.Exit
+	// with a real shutdown sequence (signal handling, then return from main) before
+	// claiming any of this cleanup happens.
+	mqConn := messaging.NewConnection(rabbitmqURL)
+	defer mqConn.Close()
+	if _, err := mqConn.Channel(); err != nil {
+		slog.Warn("RabbitMQ not reachable at boot; will retry on demand", "error", err)
 	}
+	pub := messaging.NewPublisher(mqConn)
 
 	// Entropy collector (background goroutine)
 	scheduler := collector.NewScheduler(repo, apiBaseURL, pub)
@@ -60,7 +62,7 @@ func main() {
 	// Trigger an immediate local refill when the pool drops below the low watermark.
 	svc.OnPoolLow = scheduler.TriggerRefill
 	scheduler.Start()
-	defer scheduler.Stop()
+	defer scheduler.Stop() // same caveat as mqConn.Close() above: unreachable on os.Exit
 
 	// Audit service
 	auditSvc := audit.NewService(repo, pub)
