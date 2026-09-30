@@ -24,4 +24,4 @@ branch anterior              -> feat/sync-primitives-mutex-once        20260929
 
 branch atual                 -> chore/http-status-constants            20260930    
 
-OBS: realizar merge da branch atual para branch main
+OBS: realizado merge da branch atual para branch main 20260930
