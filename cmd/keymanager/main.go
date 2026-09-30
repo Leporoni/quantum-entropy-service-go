@@ -2,6 +2,7 @@ package main
 
 import (
 	"log/slog"
+	"net/http"
 	"os"
 
 	"github.com/gin-gonic/gin"
@@ -76,7 +77,7 @@ func main() {
 	r.Use(gin.Logger(), middleware.Recovery())
 
 	r.GET("/health", func(c *gin.Context) {
-		c.JSON(200, gin.H{"status": "ok", "service": "keymanager"})
+		c.JSON(http.StatusOK, gin.H{"status": "ok", "service": "keymanager"})
 	})
 
 	// Canary endpoint to demonstrate the custom Recovery middleware.

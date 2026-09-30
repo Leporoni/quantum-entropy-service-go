@@ -20,6 +20,8 @@ branch anterior              -> feat/audit-fan-in                      20260929
 
 branch anterior              -> feat/scheduler-fanout-pool             20260929
 
-branch atual                 -> feat/sync-primitives-mutex-once        20260929
+branch anterior              -> feat/sync-primitives-mutex-once        20260929
 
-OBS: realizado merge da branch atual para branch main 20260929
+branch atual                 -> chore/http-status-constants            20260930    
+
+OBS: realizar merge da branch atual para branch main
