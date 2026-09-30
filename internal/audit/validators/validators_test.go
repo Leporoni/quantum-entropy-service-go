@@ -21,6 +21,27 @@ func allZeros(n int) []byte {
 	return make([]byte, n)
 }
 
+func allOnes(n int) []byte {
+	out := make([]uint8, n)
+	for i := range out {
+		out[i] = 1
+	}
+	return out
+}
+
+// alternating returns 1010..., the input where every run-based test has a
+// known answer: runs at their maximum, monobit at its maximum, cumulative
+// sums pinned at zero.
+func alternating(n int) []uint8 {
+	out := make([]uint8, n)
+	for i := range out {
+		if i%2 == 0 {
+			out[i] = 1
+		}
+	}
+	return out
+}
+
 func TestIgamcReferenceValues(t *testing.T) {
 	cases := []struct {
 		a, x, want float64
@@ -57,107 +78,110 @@ func TestNormalCDF(t *testing.T) {
 	}
 }
 
-func TestMonobit(t *testing.T) {
-	allOne := make([]uint8, 1000)
-	for i := range allOne {
-		allOne[i] = 1
+// TestBiasedInputRejected covers the shape shared by every NIST test: a
+// deliberately non-random input must produce a p-value pinned near zero. These
+// were six near-identical functions before; as one table a failure names the
+// validator and the input instead of pointing at a line inside a 15-line body.
+func TestBiasedInputRejected(t *testing.T) {
+	cases := []struct {
+		name string
+		bits []uint8
+		run  func([]uint8) float64
+		tol  float64
+	}{
+		{"monobit/all-ones", allOnes(1000), NISTMonobit, 1e-6},
+		{"runs/alternating", alternating(1000), NISTRuns, 1e-3},
+		{"block-frequency/all-zeros", ToBits(allZeros(4096)), func(b []uint8) float64 {
+			return NISTBlockFrequency(b, 128)
+		}, 1e-6},
+		{"longest-run/all-zeros", ToBits(allZeros(10000)), NISTLongestRunOfOnes, 1e-3},
+		{"longest-run/all-ones", allOnes(10000), NISTLongestRunOfOnes, 1e-3},
+		{"approx-entropy/all-zeros", ToBits(allZeros(10000)), func(b []uint8) float64 {
+			return NISTApproximateEntropy(b, 5)
+		}, 1e-3},
+		{"serial/all-zeros", ToBits(allZeros(8192)), func(b []uint8) float64 {
+			p1, p2, _ := NISTSerial(b)
+			return math.Max(p1, p2)
+		}, 1e-3},
+		{"cumulative-sums/all-zeros", ToBits(allZeros(4096)), func(b []uint8) float64 {
+			fwd, rev := NISTCumulativeSums(b)
+			return math.Max(fwd, rev)
+		}, 0}, // exact: an all-zero walk never leaves zero, so p is exactly 0
 	}
-	if p := NISTMonobit(allOne); p > 1e-6 {
-		t.Fatalf("all-ones monobit should be ~0, got %v", p)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if p := c.run(c.bits); p > c.tol {
+				t.Fatalf("p = %v, want <= %v (biased input must be rejected)", p, c.tol)
+			}
+		})
 	}
-	alt := make([]uint8, 1000)
-	for i := range alt {
-		if i%2 == 0 {
-			alt[i] = 1
-		}
-	}
-	if p := NISTMonobit(alt); p < 0.9 {
+}
+
+// TestMonobitAlternating is the one inverted assertion: 1010... is the input
+// with maximal monobit bias, so p must be near 1 rather than near 0.
+func TestMonobitAlternating(t *testing.T) {
+	if p := NISTMonobit(alternating(1000)); p < 0.9 {
 		t.Fatalf("alternating monobit should be ~1, got %v", p)
 	}
-	if p := NISTMonobit(ToBits(pseudoRandBytes(2048, 42))); p < 0 || p > 1 || math.IsNaN(p) {
-		t.Fatalf("random monobit out of range: %v", p)
+}
+
+// TestRandomInputInRange is the mirror of TestBiasedInputRejected: the same
+// validators on pseudo-random data must land in [0,1] and never NaN. NaN would
+// silently pass a bare `p < 0 || p > 1` check, since every comparison with
+// NaN is false, so it is asserted separately.
+func TestRandomInputInRange(t *testing.T) {
+	cases := []struct {
+		name string
+		bits []uint8
+		run  func([]uint8) float64
+	}{
+		{"monobit", ToBits(pseudoRandBytes(2048, 42)), NISTMonobit},
+		{"runs", ToBits(pseudoRandBytes(2048, 7)), NISTRuns},
+		{"block-frequency", ToBits(pseudoRandBytes(8192, 99)), func(b []uint8) float64 {
+			return NISTBlockFrequency(b, 128)
+		}},
+		{"longest-run", ToBits(pseudoRandBytes(8192, 3)), NISTLongestRunOfOnes},
+		{"approx-entropy", ToBits(pseudoRandBytes(10000, 5)), func(b []uint8) float64 {
+			return NISTApproximateEntropy(b, 5)
+		}},
+		{"cumulative-sums", ToBits(pseudoRandBytes(8192, 21)), func(b []uint8) float64 {
+			fwd, rev := NISTCumulativeSums(b)
+			return math.Max(fwd, rev)
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			for _, p := range []float64{c.run(c.bits), c.run(c.bits)} {
+				if math.IsNaN(p) {
+					t.Fatalf("p is NaN")
+				}
+				if p < 0 || p > 1 {
+					t.Fatalf("p = %v, want within [0,1]", p)
+				}
+			}
+		})
 	}
 }
 
-func TestRuns(t *testing.T) {
-	alt := make([]uint8, 1000)
-	for i := range alt {
-		if i%2 == 0 {
-			alt[i] = 1
-		}
-	}
-	if p := NISTRuns(alt); p > 1e-3 {
-		t.Fatalf("alternating runs p should be tiny, got %v", p)
-	}
-	if p := NISTRuns(ToBits(pseudoRandBytes(2048, 7))); p < 0 || p > 1 || math.IsNaN(p) {
-		t.Fatalf("random runs out of range: %v", p)
-	}
-}
-
-func TestBlockFrequency(t *testing.T) {
-	zeros := allZeros(4096)
-	if p := NISTBlockFrequency(ToBits(zeros), 128); p > 1e-6 {
-		t.Fatalf("all-zeros block freq should fail, got %v", p)
-	}
-	if p := NISTBlockFrequency(ToBits(pseudoRandBytes(8192, 99)), 128); p < 0 || p > 1 || math.IsNaN(p) {
-		t.Fatalf("random block freq out of range: %v", p)
-	}
-}
-
-func TestLongestRun(t *testing.T) {
-	if p := NISTLongestRunOfOnes(ToBits(allZeros(10000))); p > 1e-3 {
-		t.Fatalf("all-zeros longest run should fail, got %v", p)
-	}
-	var allOne []uint8
-	for i := 0; i < 10000; i++ {
-		allOne = append(allOne, 1)
-	}
-	if p := NISTLongestRunOfOnes(allOne); p > 1e-3 {
-		t.Fatalf("all-ones longest run should fail, got %v", p)
-	}
-	if p := NISTLongestRunOfOnes(ToBits(pseudoRandBytes(8192, 3))); p < 0 || p > 1 || math.IsNaN(p) {
-		t.Fatalf("random longest run out of range: %v", p)
-	}
-}
-
-func TestApproximateEntropy(t *testing.T) {
-	if p := NISTApproximateEntropy(ToBits(allZeros(10000)), 5); p > 1e-3 {
-		t.Fatalf("all-zeros approx entropy should fail, got %v", p)
-	}
-	if p := NISTApproximateEntropy(ToBits(pseudoRandBytes(10000, 5)), 5); p < 0 || p > 1 || math.IsNaN(p) {
-		t.Fatalf("random approx entropy out of range: %v", p)
-	}
-}
-
-func TestSerial(t *testing.T) {
+// TestSerialAdaptiveWindow covers NISTSerial separately because it also returns
+// the window m it picked, which the p-value alone cannot verify.
+func TestSerialAdaptiveWindow(t *testing.T) {
 	p1, p2, m := NISTSerial(ToBits(pseudoRandBytes(8192, 11)))
 	if m < 3 || m > 16 {
-		t.Fatalf("adaptive m out of range: %d", m)
+		t.Errorf("adaptive m = %d, want within [3,16]", m)
 	}
-	for _, p := range []float64{p1, p2} {
-		if p < 0 || p > 1 || math.IsNaN(p) {
-			t.Fatalf("random serial p out of range: %v", p)
+	for i, p := range []float64{p1, p2} {
+		if math.IsNaN(p) || p < 0 || p > 1 {
+			t.Errorf("random serial p%d = %v, want within [0,1]", i+1, p)
 		}
 	}
+
 	p1z, p2z, mz := NISTSerial(ToBits(allZeros(8192)))
 	if mz < 3 {
-		t.Fatalf("adaptive m too small: %d", mz)
+		t.Errorf("adaptive m on all-zeros = %d, want >= 3", mz)
 	}
 	if p1z > 1e-3 || p2z > 1e-3 {
-		t.Fatalf("all-zeros serial should fail, got p1=%v p2=%v", p1z, p2z)
-	}
-}
-
-func TestCumulativeSums(t *testing.T) {
-	pf, pr := NISTCumulativeSums(ToBits(allZeros(4096)))
-	if pf != 0 || pr != 0 {
-		t.Fatalf("all-zeros cumulative sums should be 0, got fwd=%v rev=%v", pf, pr)
-	}
-	fwd, rev := NISTCumulativeSums(ToBits(pseudoRandBytes(8192, 21)))
-	for _, p := range []float64{fwd, rev} {
-		if p < 0 || p > 1 || math.IsNaN(p) {
-			t.Fatalf("random cumulative sums out of range: %v", p)
-		}
+		t.Errorf("all-zeros serial should fail, got p1=%v p2=%v", p1z, p2z)
 	}
 }
 
